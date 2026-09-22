@@ -3,4 +3,6 @@
 Pods/
 build/
 DerivedData/
+dist/
+*.ipa
 .DS_Store
