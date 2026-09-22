@@ -24,9 +24,39 @@ enum LocalVideoService {
         return url
     }
 
+    private static let audioExtensions: Set<String> = [
+        "mp3", "flac", "wav", "aac", "m4a", "m4b", "ogg", "oga", "opus", "wma", "ape", "alac", "aiff", "aif", "mka",
+    ]
+    private static let imageExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "tif", "tiff",
+    ]
+
     /// Video files under `folder` (recursive). Call within the folder's security scope.
     static func scan(_ folder: URL) -> [VideoItem] {
-        var result: [VideoItem] = []
+        scanFiles(folder, matching: videoExtensions).map {
+            VideoItem(name: $0.name, source: $0.url.absoluteString, sizeBytes: $0.size, lastModified: $0.modified)
+        }
+    }
+
+    /// Audio files under `folder` (recursive). Call within the folder's security scope.
+    static func scanAudio(_ folder: URL) -> [AudioItem] {
+        scanFiles(folder, matching: audioExtensions).map {
+            AudioItem(name: $0.name, title: $0.url.deletingPathExtension().lastPathComponent, artist: "", album: "",
+                      source: $0.url.absoluteString, sizeBytes: $0.size, lastModified: $0.modified)
+        }
+    }
+
+    /// Picture files under `folder` (recursive). Call within the folder's security scope.
+    static func scanImages(_ folder: URL) -> [ImageItem] {
+        scanFiles(folder, matching: imageExtensions).map {
+            ImageItem(name: $0.name, source: $0.url.absoluteString, sizeBytes: $0.size, lastModified: $0.modified)
+        }
+    }
+
+    private struct FoundFile { let url: URL; let name: String; let size: Int64; let modified: Date }
+
+    private static func scanFiles(_ folder: URL, matching extensions: Set<String>) -> [FoundFile] {
+        var result: [FoundFile] = []
         let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isHiddenKey]
         guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else {
             return result
@@ -34,14 +64,14 @@ enum LocalVideoService {
         for case let fileUrl as URL in enumerator {
             guard let values = try? fileUrl.resourceValues(forKeys: Set(keys)) else { continue }
             if values.isDirectory == true { continue }
-            guard videoExtensions.contains(fileUrl.pathExtension.lowercased()) else { continue }
-            result.append(VideoItem(
+            guard extensions.contains(fileUrl.pathExtension.lowercased()) else { continue }
+            result.append(FoundFile(
+                url: fileUrl,
                 name: fileUrl.lastPathComponent,
-                source: fileUrl.absoluteString,
-                sizeBytes: Int64(values.fileSize ?? 0),
-                lastModified: values.contentModificationDate ?? .distantPast
+                size: Int64(values.fileSize ?? 0),
+                modified: values.contentModificationDate ?? .distantPast
             ))
         }
-        return result.sorted { $0.lastModified > $1.lastModified }
+        return result.sorted { $0.modified > $1.modified }
     }
 }

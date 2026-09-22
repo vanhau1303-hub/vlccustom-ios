@@ -23,6 +23,8 @@ targets:
         NSLocalNetworkUsageDescription: "Cần quyền mạng cục bộ để duyệt và phát video từ máy tính chia sẻ qua SMB trong cùng mạng Wi-Fi."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        UIBackgroundModes:
+          - audio
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

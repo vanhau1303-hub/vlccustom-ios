@@ -10,6 +10,10 @@ struct PlayerScreen: View {
     @State private var seeking = false
     @State private var sliderValue: Double = 0
     @State private var showControls = true
+    @State private var showTrackPicker = false
+    @State private var showPictureControls = false
+
+    private static let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     var body: some View {
         ZStack {
@@ -22,6 +26,14 @@ struct PlayerScreen: View {
                     HStack {
                         Button { close() } label: { Image(systemName: "xmark.circle.fill").font(.title2) }
                         Spacer()
+                        Button { cycleSpeed() } label: { Text(speedLabel).font(.footnote.monospacedDigit()) }
+                            .buttonStyle(.bordered).tint(.white)
+                        Button { cycleFitMode() } label: { Image(systemName: "aspectratio") }
+                        Button { player.toggleDeinterlace() } label: {
+                            Image(systemName: player.deinterlaceOn ? "tv.fill" : "tv")
+                        }
+                        Button { showTrackPicker = true } label: { Image(systemName: "captions.bubble") }
+                        Button { showPictureControls = true } label: { Image(systemName: "slider.horizontal.3") }
                     }
                     .padding()
                     .foregroundStyle(.white)
@@ -64,6 +76,24 @@ struct PlayerScreen: View {
         } message: {
             Text("Định dạng/codec chưa được hỗ trợ, file lỗi hoặc mất kết nối mạng (nếu là video từ SMB).")
         }
+        .sheet(isPresented: $showTrackPicker) {
+            TrackPickerSheet(player: player)
+        }
+        .sheet(isPresented: $showPictureControls) {
+            PictureControlsSheet(player: player)
+        }
+    }
+
+    private var speedLabel: String { "\(player.playbackRate == 1 ? "1" : String(format: "%g", player.playbackRate))x" }
+
+    private func cycleSpeed() {
+        let speeds = Self.speeds
+        let next = speeds.first { $0 > player.playbackRate } ?? speeds[0]
+        player.playbackRate = next
+    }
+
+    private func cycleFitMode() {
+        player.cycleFitMode()
     }
 
     private func playNextOrClose() {
@@ -90,8 +120,17 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     @Published var duration: Int32 = 0
     @Published var didReachEnd = false
     @Published var showError = false
+    @Published var deinterlaceOn = false
+
+    private static let fitModes: [VLCVideoFitMode] = [.none, .smaller, .larger, .width, .height]
+    private var fitModeIndex = 0
 
     var progress: Double { duration > 0 ? Double(time) / Double(duration) : 0 }
+
+    var playbackRate: Float {
+        get { mediaPlayer.rate }
+        set { mediaPlayer.rate = newValue }
+    }
 
     override init() {
         super.init()
@@ -131,6 +170,74 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         mediaPlayer.stop()
     }
 
+    func cycleFitMode() {
+        fitModeIndex = (fitModeIndex + 1) % Self.fitModes.count
+        mediaPlayer.videoFitMode = Self.fitModes[fitModeIndex]
+    }
+
+    func toggleDeinterlace() {
+        deinterlaceOn.toggle()
+        mediaPlayer.setDeinterlace(deinterlaceOn ? .auto : .off, withFilter: "blend")
+    }
+
+    // MARK: - Tracks
+
+    var audioTracks: [VLCMediaPlayerTrack] { mediaPlayer.audioTracks }
+    var textTracks: [VLCMediaPlayerTrack] { mediaPlayer.textTracks }
+
+    func selectAudioTrack(_ track: VLCMediaPlayerTrack) {
+        mediaPlayer.deselectAllAudioTracks()
+        track.selected = true
+        objectWillChange.send()
+    }
+
+    func selectTextTrack(_ track: VLCMediaPlayerTrack?) {
+        mediaPlayer.deselectAllTextTracks()
+        track?.selected = true
+        objectWillChange.send()
+    }
+
+    // MARK: - Picture adjustment (VLCAdjustFilter — contrast/brightness/hue/saturation/gamma)
+
+    private func filterValue(_ parameter: VLCFilterParameter?) -> Float {
+        (parameter?.value as? NSNumber)?.floatValue ?? 1
+    }
+
+    private func setFilterValue(_ parameter: VLCFilterParameter?, _ newValue: Float) {
+        parameter?.value = NSNumber(value: newValue)
+    }
+
+    var contrast: Float {
+        get { filterValue(mediaPlayer.adjustFilter.contrast) }
+        set { setFilterValue(mediaPlayer.adjustFilter.contrast, newValue) }
+    }
+    var brightness: Float {
+        get { filterValue(mediaPlayer.adjustFilter.brightness) }
+        set { setFilterValue(mediaPlayer.adjustFilter.brightness, newValue) }
+    }
+    var hue: Float {
+        get { filterValue(mediaPlayer.adjustFilter.hue) }
+        set { setFilterValue(mediaPlayer.adjustFilter.hue, newValue) }
+    }
+    var saturation: Float {
+        get { filterValue(mediaPlayer.adjustFilter.saturation) }
+        set { setFilterValue(mediaPlayer.adjustFilter.saturation, newValue) }
+    }
+    var gamma: Float {
+        get { filterValue(mediaPlayer.adjustFilter.gamma) }
+        set { setFilterValue(mediaPlayer.adjustFilter.gamma, newValue) }
+    }
+
+    func resetPicture() {
+        let filter = mediaPlayer.adjustFilter
+        filter.contrast.value = filter.contrast.defaultValue
+        filter.brightness.value = filter.brightness.defaultValue
+        filter.hue.value = filter.hue.defaultValue
+        filter.saturation.value = filter.saturation.defaultValue
+        filter.gamma.value = filter.gamma.defaultValue
+        objectWillChange.send()
+    }
+
     // MARK: - VLCMediaPlayerDelegate
 
     func mediaPlayerStateChanged(_ notification: Notification) {
@@ -164,4 +271,88 @@ struct VlcVideoView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {}
+}
+
+/// Picks the audio track and subtitle track to play, listing whatever VLCKit reports for the current media.
+struct TrackPickerSheet: View {
+    @ObservedObject var player: VlcPlayerController
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Âm thanh") {
+                    ForEach(player.audioTracks, id: \.trackId) { track in
+                        Button {
+                            player.selectAudioTrack(track)
+                        } label: {
+                            HStack {
+                                Text(track.trackName)
+                                Spacer()
+                                if track.selected { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                }
+                Section("Phụ đề") {
+                    Button {
+                        player.selectTextTrack(nil)
+                    } label: {
+                        HStack {
+                            Text("Tắt phụ đề")
+                            Spacer()
+                            if !player.textTracks.contains(where: \.selected) { Image(systemName: "checkmark") }
+                        }
+                    }
+                    ForEach(player.textTracks, id: \.trackId) { track in
+                        Button {
+                            player.selectTextTrack(track)
+                        } label: {
+                            HStack {
+                                Text(track.trackName)
+                                Spacer()
+                                if track.selected { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Âm thanh & Phụ đề")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Xong") { dismiss() } }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+/// Contrast / brightness / hue / saturation / gamma sliders backed by VLCKit's `VLCAdjustFilter`.
+struct PictureControlsSheet: View {
+    @ObservedObject var player: VlcPlayerController
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                slider("Độ tương phản", value: Binding(get: { player.contrast }, set: { player.contrast = $0 }), range: 0...2)
+                slider("Độ sáng", value: Binding(get: { player.brightness }, set: { player.brightness = $0 }), range: 0...2)
+                slider("Sắc độ", value: Binding(get: { player.hue }, set: { player.hue = $0 }), range: -180...180)
+                slider("Độ bão hòa", value: Binding(get: { player.saturation }, set: { player.saturation = $0 }), range: 0...3)
+                slider("Gamma", value: Binding(get: { player.gamma }, set: { player.gamma = $0 }), range: 0...10)
+                Button("Đặt lại mặc định") { player.resetPicture() }
+            }
+            .navigationTitle("Chỉnh hình ảnh")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Xong") { dismiss() } }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func slider(_ title: String, value: Binding<Float>, range: ClosedRange<Float>) -> some View {
+        VStack(alignment: .leading) {
+            Text(title).font(.subheadline)
+            Slider(value: value, in: range)
+        }
+    }
 }

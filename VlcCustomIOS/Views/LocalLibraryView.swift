@@ -7,6 +7,15 @@ struct LocalLibraryView: View {
     @State private var loading = false
     @State private var showPicker = false
     @State private var playing: VideoItem?
+    @State private var query = ""
+    @State private var sort: MediaSort = .dateDesc
+    @State private var addingToPlaylist: VideoItem?
+    @State private var playlists: [Playlist] = []
+
+    private var displayed: [VideoItem] {
+        let base = query.isEmpty ? videos : videos.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        return sort.apply(base)
+    }
 
     var body: some View {
         NavigationStack {
@@ -19,7 +28,7 @@ struct LocalLibraryView: View {
                         message: "Chọn một thư mục trong ứng dụng Tệp để liệt kê video trong đó."
                     )
                 } else {
-                    List(videos) { video in
+                    List(displayed) { video in
                         Button {
                             play(video)
                         } label: {
@@ -28,11 +37,16 @@ struct LocalLibraryView: View {
                                 Text(video.sizeLabel).font(.caption).foregroundStyle(.secondary)
                             }
                         }
+                        .contextMenu {
+                            Button { addingToPlaylist = video } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
+                        }
                     }
+                    .searchable(text: $query)
                 }
             }
             .navigationTitle("Video trên máy")
             .toolbar {
+                ToolbarItem(placement: .primaryAction) { SortMenu(sort: $sort) }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Chọn thư mục…") { showPicker = true }
                 }
@@ -46,8 +60,32 @@ struct LocalLibraryView: View {
             .fullScreenCover(item: $playing) { _ in
                 PlayerScreen(onClose: { playing = nil })
             }
-            .task { restoreLastFolder() }
+            .confirmationDialog("Thêm vào playlist", isPresented: Binding(get: { addingToPlaylist != nil }, set: { if !$0 { addingToPlaylist = nil } }), titleVisibility: .visible) {
+                ForEach(playlists) { playlist in
+                    Button(playlist.name) { addToPlaylist(playlist) }
+                }
+                Button("Tạo playlist mới") { createPlaylistAndAdd() }
+                Button("Huỷ", role: .cancel) {}
+            }
+            .task {
+                restoreLastFolder()
+                playlists = PlaylistStore.video.load()
+            }
         }
+    }
+
+    private func addToPlaylist(_ playlist: Playlist) {
+        guard let video = addingToPlaylist else { return }
+        PlaylistStore.video.addItem(PlaylistItem(uri: video.source, title: video.name), to: playlist.id)
+        addingToPlaylist = nil
+    }
+
+    private func createPlaylistAndAdd() {
+        guard let video = addingToPlaylist else { return }
+        let playlist = PlaylistStore.video.create(name: video.name)
+        PlaylistStore.video.addItem(PlaylistItem(uri: video.source, title: video.name), to: playlist.id)
+        playlists = PlaylistStore.video.load()
+        addingToPlaylist = nil
     }
 
     private func restoreLastFolder() {
@@ -68,7 +106,7 @@ struct LocalLibraryView: View {
     }
 
     private func play(_ video: VideoItem) {
-        PlaybackQueue.shared.start(videos, index: videos.firstIndex(of: video) ?? 0, label: folderURL?.lastPathComponent ?? "")
+        PlaybackQueue.shared.start(displayed, index: displayed.firstIndex(of: video) ?? 0, label: folderURL?.lastPathComponent ?? "")
         playing = video
     }
 }

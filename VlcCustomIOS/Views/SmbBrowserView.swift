@@ -15,6 +15,10 @@ struct SmbBrowserView: View {
     @State private var connecting = false
     @State private var loading = false
     @State private var playing: SmbEntry?
+    @State private var query = ""
+    @State private var sort: MediaSort = .nameAsc
+    @State private var addingToPlaylist: SmbEntry?
+    @State private var playlists: [Playlist] = []
 
     var body: some View {
         NavigationStack {
@@ -26,18 +30,55 @@ struct SmbBrowserView: View {
                     HStack {
                         Text(host + (path.isEmpty ? "" : "/" + path)).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                         Spacer()
-                        if !path.isEmpty { Button("↑ Lên trên") { goUp() } }
+                        if !path.isEmpty {
+                            Button {
+                                FavoritesStore.toggle(host: host, path: path, title: (path as NSString).lastPathComponent)
+                            } label: {
+                                Image(systemName: FavoritesStore.isFavorite(host: host, path: path) ? "star.fill" : "star")
+                            }
+                            Button("↑ Lên trên") { goUp() }
+                        }
                     }
                 }
                 list
             }
             .padding(.horizontal)
             .navigationTitle("Mạng (SMB)")
+            .searchable(text: $query)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) { SortMenu(sort: $sort) }
+            }
             .fullScreenCover(item: $playing) { _ in
                 PlayerScreen(onClose: { playing = nil })
             }
-            .task { savedProfiles = SmbServerStore.load() }
+            .confirmationDialog("Thêm vào playlist", isPresented: Binding(get: { addingToPlaylist != nil }, set: { if !$0 { addingToPlaylist = nil } }), titleVisibility: .visible) {
+                ForEach(playlists) { playlist in
+                    Button(playlist.name) { addToPlaylist(playlist) }
+                }
+                Button("Tạo playlist mới") { createPlaylistAndAdd() }
+                Button("Huỷ", role: .cancel) {}
+            }
+            .task {
+                savedProfiles = SmbServerStore.load()
+                playlists = PlaylistStore.video.load()
+            }
         }
+    }
+
+    private func addToPlaylist(_ playlist: Playlist) {
+        guard let entry = addingToPlaylist, let connection else { return }
+        let uri = "smb://\(connection.host)/\(entry.path)"
+        PlaylistStore.video.addItem(PlaylistItem(uri: uri, title: entry.name), to: playlist.id)
+        addingToPlaylist = nil
+    }
+
+    private func createPlaylistAndAdd() {
+        guard let entry = addingToPlaylist, let connection else { return }
+        let playlist = PlaylistStore.video.create(name: entry.name)
+        let uri = "smb://\(connection.host)/\(entry.path)"
+        PlaylistStore.video.addItem(PlaylistItem(uri: uri, title: entry.name), to: playlist.id)
+        playlists = PlaylistStore.video.load()
+        addingToPlaylist = nil
     }
 
     private var connectForm: some View {
@@ -79,7 +120,7 @@ struct SmbBrowserView: View {
         } else if connection != nil && entries.isEmpty {
             ContentUnavailableFallback(title: "Trống", message: "Thư mục này không có thư mục con hay video nào.")
         } else {
-            List(entries) { entry in
+            List(displayedEntries) { entry in
                 Button {
                     open(entry)
                 } label: {
@@ -95,9 +136,19 @@ struct SmbBrowserView: View {
                     }
                 }
                 .disabled(!entry.isDirectory && !entry.isVideo)
+                .contextMenu {
+                    if entry.isVideo {
+                        Button { addingToPlaylist = entry } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
+                    }
+                }
             }
             .listStyle(.plain)
         }
+    }
+
+    private var displayedEntries: [SmbEntry] {
+        let base = query.isEmpty ? entries : entries.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        return sort.apply(base)
     }
 
     private func connect() {
@@ -137,7 +188,7 @@ struct SmbBrowserView: View {
             return
         }
         guard entry.isVideo, let connection else { return }
-        let videos = entries.filter(\.isVideo)
+        let videos = displayedEntries.filter(\.isVideo)
         let items = videos.map { VideoItem(name: $0.name, source: "smb://\(connection.host)/\($0.path)", sizeBytes: $0.sizeBytes, lastModified: $0.lastModified) }
         let index = videos.firstIndex(of: entry) ?? 0
         PlaybackQueue.shared.start(items, index: index, label: "SMB: \(connection.host)/\(path)")

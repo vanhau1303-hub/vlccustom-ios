@@ -28,14 +28,19 @@ File `.ipa` tải về là **chưa ký** (unsigned) — bình thường, vì kh�
 ## Cài lên iPhone — không cần Mac
 Dùng **[AltStore](https://altstore.io)**: cài `AltServer` trên chính máy Windows này, cắm iPhone bằng cáp (hoặc cùng Wi-Fi), rồi kéo file `.ipa` vào AltStore trên điện thoại. AltServer tự ký lại bằng Apple ID miễn phí của bạn khi cài. Giới hạn của Apple với tài khoản miễn phí: chữ ký hết hạn sau 7 ngày, AltServer sẽ tự làm mới nếu điện thoại và máy tính cùng mạng (hoặc dùng tính năng "AltStore mail relay" để làm mới qua Wi-Fi bất kỳ đâu).
 
-## Trạng thái: bản đầu tiên (v0.1) — build CI xanh, chưa test trên iPhone thật
-Đã viết, **đã build thành công** (chưa cài thử lên máy thật — cần bạn làm qua AltStore ở bước trên rồi báo lại):
-- Tab "Trên máy": chọn thư mục qua ứng dụng Tệp (giới hạn của iOS — không duyệt được toàn bộ ổ đĩa như Android/Windows), phát video.
-- Tab "Mạng (SMB)": nhập host/tài khoản/mật khẩu (mật khẩu lưu trong Keychain), duyệt thư mục, phát video.
-- Trình phát: play/pause, tua, tiến/lùi bài, toàn màn hình.
+## Trạng thái: đã thêm phần lớn tính năng của bản Android — chưa test trên iPhone thật
+- Tab "Video": chọn thư mục qua ứng dụng Tệp (giới hạn của iOS — không duyệt được toàn bộ ổ đĩa như Android/Windows), tìm kiếm, sắp xếp, thêm vào playlist, thumbnail (khung hình lấy qua `AVAssetImageGenerator`, có cache).
+- Tab "Mạng (SMB)": nhập host/tài khoản/mật khẩu (mật khẩu lưu Keychain), duyệt thư mục, đánh dấu yêu thích, tìm kiếm/sắp xếp, thêm vào playlist.
+- Tab "Nhạc": nhạc trong thư mục đã chọn + duyệt SMB riêng, phát nền (`AVAudioSession` category `.playback`, `UIBackgroundModes: audio`), điều khiển ở màn hình khóa/Control Center qua `MPNowPlayingInfoCenter`/`MPRemoteCommandCenter`, trộn bài, lặp lại.
+- Tab "Ảnh": lưới thumbnail (trên máy + SMB), xem toàn màn hình có zoom (chụm 2 ngón), vuốt chuyển ảnh, trình chiếu tự động.
+- Tab "Playlist": playlist video và playlist nhạc riêng, tạo/xoá/thêm/bớt bài.
+- Tab "Yêu thích": thư mục SMB đã đánh dấu sao, bấm vào tự kết nối lại và mở đúng thư mục.
+- Trình phát video: play/pause, tua, tiến/lùi bài, toàn màn hình, **tốc độ phát** (0.5x–2x), **chọn track âm thanh/phụ đề**, **chỉnh màu** (tương phản/sáng/sắc độ/bão hòa/gamma qua `VLCAdjustFilter`), **khử sọc** (deinterlace), đổi **tỉ lệ khung hình**.
 
-Chưa có (dự kiến làm dần):
-- Thumbnail cho video, phụ đề AI, phụ đề song song, dịch tự động, thư viện Nhạc/Ảnh, Playlist, Yêu thích.
+Chưa có (dự kiến làm dần — bị giới hạn công nghệ hoặc cần dự án con riêng):
+- Phụ đề AI (nhận dạng giọng nói) và dịch tự động — cần build riêng một mô hình nhận dạng giọng nói cho iOS.
+- Trình Explorer duyệt toàn bộ ổ đĩa — **không thể làm được trên iOS** do giới hạn sandbox của Apple, khác iOS không phải do thiếu công sức.
+- Khoá ứng dụng, sao chép/di chuyển/đổi tên/xoá file, dịch vụ chạy nền giữ kết nối.
 
 ## Cấu trúc
 ```
@@ -43,7 +48,10 @@ project.yml       # XcodeGen: sinh VlcCustomIOS.xcodeproj
 Podfile            # CocoaPods: MobileVLCKit
 VlcCustomIOS/
   VlcCustomIOSApp.swift
-  Models/           # VideoItem, SmbEntry, SmbServerProfile
-  Services/         # SmbConnection (AMSMB2), SmbHttpProxy, LocalVideoService, SmbServerStore, PlaybackQueue
-  Views/            # ContentView (TabView), LocalLibraryView, SmbBrowserView, PlayerScreen, FolderPicker
+  Models/           # VideoItem, SmbEntry, SmbServerProfile, AudioItem, ImageItem, Playlist, FavoriteFolder
+  Services/         # SmbConnection (AMSMB2), SmbHttpProxy, LocalVideoService, SmbServerStore, PlaybackQueue,
+                     # ThumbnailService, PlaylistStore, FavoritesStore, MusicPlayer (+MusicQueue), SmbUri
+  Views/            # ContentView (TabView), LocalLibraryView, SmbBrowserView, MusicLibraryView, ImagesLibraryView,
+                     # PlaylistsView, FavoritesView, PlayerScreen (+picture/track sheets), MusicPlayerScreen,
+                     # NowPlayingBar, Sorting (search/sort helper), FolderPicker
 ```
