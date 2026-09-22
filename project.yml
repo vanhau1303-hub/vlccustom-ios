@@ -7,7 +7,7 @@ options:
 packages:
   AMSMB2:
     url: https://github.com/amosavian/AMSMB2.git
-    from: 8.2.0
+    from: 4.0.0
 targets:
   VlcCustomIOS:
     type: application
