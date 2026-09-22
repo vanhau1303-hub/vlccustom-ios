@@ -45,6 +45,12 @@ targets:
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1,2"
     dependencies:
+      # Explicit `embed: true` — without it, `xcodebuild archive` (used for the real .ipa) does not copy these
+      # Swift Package frameworks into the app bundle even though it links against them, so the app compiles and even
+      # runs fine from a plain Simulator build, but crashes at launch on a real device with a dyld "Library not
+      # loaded" error the first time it has to load one of them. Caught from a real crash log (2026-09-22).
       - package: AMSMB2
+        embed: true
       - package: WhisperKit
         product: WhisperKit
+        embed: true
