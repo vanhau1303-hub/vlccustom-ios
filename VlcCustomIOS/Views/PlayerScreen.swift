@@ -28,7 +28,7 @@ struct PlayerScreen: View {
                         Spacer()
                         Button { cycleSpeed() } label: { Text(speedLabel).font(.footnote.monospacedDigit()) }
                             .buttonStyle(.bordered).tint(.white)
-                        Button { cycleFitMode() } label: { Image(systemName: "aspectratio") }
+                        Button { player.cycleAspectRatio() } label: { Image(systemName: "aspectratio") }
                         Button { player.toggleDeinterlace() } label: {
                             Image(systemName: player.deinterlaceOn ? "tv.fill" : "tv")
                         }
@@ -92,10 +92,6 @@ struct PlayerScreen: View {
         player.playbackRate = next
     }
 
-    private func cycleFitMode() {
-        player.cycleFitMode()
-    }
-
     private func playNextOrClose() {
         if queue.moveNext() != nil { player.playCurrent() } else { close() }
     }
@@ -122,8 +118,9 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     @Published var showError = false
     @Published var deinterlaceOn = false
 
-    private static let fitModes: [VLCVideoFitMode] = [.none, .smaller, .larger, .width, .height]
-    private var fitModeIndex = 0
+    /// `nil` means "auto" (let VLCKit pick). Cycled by the aspect-ratio button in the player toolbar.
+    private static let aspectRatios: [String?] = [nil, "16:9", "4:3", "1:1", "16:10"]
+    private var aspectIndex = 0
 
     var progress: Double { duration > 0 ? Double(time) / Double(duration) : 0 }
 
@@ -170,9 +167,13 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         mediaPlayer.stop()
     }
 
-    func cycleFitMode() {
-        fitModeIndex = (fitModeIndex + 1) % Self.fitModes.count
-        mediaPlayer.videoFitMode = Self.fitModes[fitModeIndex]
+    func cycleAspectRatio() {
+        aspectIndex = (aspectIndex + 1) % Self.aspectRatios.count
+        if let ratio = Self.aspectRatios[aspectIndex] {
+            mediaPlayer.videoAspectRatio = strdup(ratio)
+        } else {
+            mediaPlayer.videoAspectRatio = nil
+        }
     }
 
     func toggleDeinterlace() {
@@ -181,29 +182,42 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     // MARK: - Tracks
+    //
+    // MobileVLCKit 3.7.3 (the CocoaPods release actually installed — newer track APIs seen in vlckit's git history
+    // are not in this release yet) exposes tracks as two parallel arrays: names and the "index" value you assign back
+    // to select that track. `videoSubTitlesNames`/`Indexes` already include a "Disabled" entry (index -1).
 
-    var audioTracks: [VLCMediaPlayerTrack] { mediaPlayer.audioTracks }
-    var textTracks: [VLCMediaPlayerTrack] { mediaPlayer.textTracks }
+    struct TrackOption: Identifiable { let id: Int32; let name: String }
 
-    func selectAudioTrack(_ track: VLCMediaPlayerTrack) {
-        mediaPlayer.deselectAllAudioTracks()
-        track.selected = true
-        objectWillChange.send()
+    var audioTrackOptions: [TrackOption] {
+        let names = (mediaPlayer.audioTrackNames as? [String]) ?? []
+        let indexes = (mediaPlayer.audioTrackIndexes as? [NSNumber]) ?? []
+        return zip(indexes, names).map { TrackOption(id: $0.0.int32Value, name: $0.1) }
     }
 
-    func selectTextTrack(_ track: VLCMediaPlayerTrack?) {
-        mediaPlayer.deselectAllTextTracks()
-        track?.selected = true
-        objectWillChange.send()
+    var subtitleTrackOptions: [TrackOption] {
+        let names = (mediaPlayer.videoSubTitlesNames as? [String]) ?? []
+        let indexes = (mediaPlayer.videoSubTitlesIndexes as? [NSNumber]) ?? []
+        return zip(indexes, names).map { TrackOption(id: $0.0.int32Value, name: $0.1) }
+    }
+
+    var currentAudioTrack: Int32 {
+        get { mediaPlayer.currentAudioTrackIndex }
+        set { mediaPlayer.currentAudioTrackIndex = newValue; objectWillChange.send() }
+    }
+
+    var currentSubtitleTrack: Int32 {
+        get { mediaPlayer.currentVideoSubTitleIndex }
+        set { mediaPlayer.currentVideoSubTitleIndex = newValue; objectWillChange.send() }
     }
 
     // MARK: - Picture adjustment (VLCAdjustFilter — contrast/brightness/hue/saturation/gamma)
 
-    private func filterValue(_ parameter: VLCFilterParameter?) -> Float {
+    private func filterValue(_ parameter: VLCFilterParameterProtocol?) -> Float {
         (parameter?.value as? NSNumber)?.floatValue ?? 1
     }
 
-    private func setFilterValue(_ parameter: VLCFilterParameter?, _ newValue: Float) {
+    private func setFilterValue(_ parameter: VLCFilterParameterProtocol?, _ newValue: Float) {
         parameter?.value = NSNumber(value: newValue)
     }
 
@@ -229,12 +243,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     func resetPicture() {
-        let filter = mediaPlayer.adjustFilter
-        filter.contrast.value = filter.contrast.defaultValue
-        filter.brightness.value = filter.brightness.defaultValue
-        filter.hue.value = filter.hue.defaultValue
-        filter.saturation.value = filter.saturation.defaultValue
-        filter.gamma.value = filter.gamma.defaultValue
+        mediaPlayer.adjustFilter.resetParametersIfNeeded()
         objectWillChange.send()
     }
 
@@ -273,7 +282,8 @@ struct VlcVideoView: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
-/// Picks the audio track and subtitle track to play, listing whatever VLCKit reports for the current media.
+/// Picks the audio track and subtitle track to play, listing whatever VLCKit reports for the current media
+/// (subtitle options already include a "Disabled" entry from VLCKit itself).
 struct TrackPickerSheet: View {
     @ObservedObject var player: VlcPlayerController
     @Environment(\.dismiss) private var dismiss
@@ -282,36 +292,27 @@ struct TrackPickerSheet: View {
         NavigationStack {
             List {
                 Section("Âm thanh") {
-                    ForEach(player.audioTracks, id: \.trackId) { track in
+                    ForEach(player.audioTrackOptions) { option in
                         Button {
-                            player.selectAudioTrack(track)
+                            player.currentAudioTrack = option.id
                         } label: {
                             HStack {
-                                Text(track.trackName)
+                                Text(option.name)
                                 Spacer()
-                                if track.selected { Image(systemName: "checkmark") }
+                                if player.currentAudioTrack == option.id { Image(systemName: "checkmark") }
                             }
                         }
                     }
                 }
                 Section("Phụ đề") {
-                    Button {
-                        player.selectTextTrack(nil)
-                    } label: {
-                        HStack {
-                            Text("Tắt phụ đề")
-                            Spacer()
-                            if !player.textTracks.contains(where: \.selected) { Image(systemName: "checkmark") }
-                        }
-                    }
-                    ForEach(player.textTracks, id: \.trackId) { track in
+                    ForEach(player.subtitleTrackOptions) { option in
                         Button {
-                            player.selectTextTrack(track)
+                            player.currentSubtitleTrack = option.id
                         } label: {
                             HStack {
-                                Text(track.trackName)
+                                Text(option.name)
                                 Spacer()
-                                if track.selected { Image(systemName: "checkmark") }
+                                if player.currentSubtitleTrack == option.id { Image(systemName: "checkmark") }
                             }
                         }
                     }
