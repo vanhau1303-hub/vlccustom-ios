@@ -128,6 +128,9 @@ final class SmbHttpProxy {
 
             if method == "HEAD" || contentLength == 0 { close(connection, status: nil); return }
 
+            // Held for the whole streamed read, not just the call that starts it — a thumbnail fetch (or another
+            // player request) must wait its turn instead of racing this one for the connection's SMB2 credits.
+            await smb.acquireReadSlot()
             do {
                 let stream = try await smb.readStream(path: path, range: start..<(end + 1))
                 for try await chunk in stream where !chunk.isEmpty {
@@ -139,6 +142,7 @@ final class SmbHttpProxy {
                 // Streaming failed partway through (server dropped, seek elsewhere) — headers are already sent, so
                 // there is nothing left to do but stop; the player will surface this as a playback error.
             }
+            await smb.releaseReadSlot()
             close(connection, status: nil)
         }
     }

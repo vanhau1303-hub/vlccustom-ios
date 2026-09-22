@@ -25,6 +25,35 @@ actor SmbConnection {
         self.domain = domain
     }
 
+    // MARK: - Read gate
+    //
+    // The Android app hit this exact failure mode ("Failed to acquire credits in time") when concurrent SMB2 reads
+    // — e.g. thumbnails generating while a video streams — outran the server's SMB2 credit window (its flow-control
+    // budget for outstanding requests on one connection), and fixed it with a gate limiting concurrent reads. Doing
+    // the same here: every actual data read (readRange, readStream) goes through this before touching the network,
+    // so a video stream and any thumbnail fetches never race each other for the same connection's credits.
+
+    private var activeReads = 0
+    private var readWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Waits for exclusive access to read from this connection. Callers doing a long sequential read (the HTTP
+    /// proxy streaming a video) should hold the slot for the whole read, releasing only once fully done.
+    func acquireReadSlot() async {
+        if activeReads == 0 {
+            activeReads += 1
+            return
+        }
+        await withCheckedContinuation { readWaiters.append($0) }
+        activeReads += 1
+    }
+
+    func releaseReadSlot() {
+        activeReads -= 1
+        if !readWaiters.isEmpty {
+            readWaiters.removeFirst().resume()
+        }
+    }
+
     private func credential() -> URLCredential? {
         username.isEmpty ? nil : URLCredential(user: username, password: password, persistence: .forSession)
     }
@@ -107,6 +136,8 @@ actor SmbConnection {
         let (share, relative) = Self.split(path)
         let manager = try await managerFor(share: share)
         let range: Range<Int64> = offset..<(offset + Int64(count))
+        await acquireReadSlot()
+        defer { releaseReadSlot() }
         do {
             return try await manager.contents(atPath: "/" + relative, range: range)
         } catch {

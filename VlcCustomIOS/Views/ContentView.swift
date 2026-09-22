@@ -55,6 +55,14 @@ struct SettingsView: View {
                     Text("Khoá ứng dụng.")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
+                Section {
+                    HStack {
+                        Text("Phiên bản")
+                        Spacer()
+                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .navigationTitle("VLCcustom cho iOS")
         }

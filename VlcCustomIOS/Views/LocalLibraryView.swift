@@ -22,7 +22,7 @@ struct LocalLibraryView: View {
         NavigationStack {
             Group {
                 if loading {
-                    ProgressView("Đang quét…")
+                    ProgressView("Đang quét…").frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).padding(.top, 48)
                 } else if videos.isEmpty {
                     ContentUnavailableFallback(
                         title: "Chưa có video",
@@ -144,5 +144,7 @@ struct ContentUnavailableFallback: View {
             Text(title).font(.headline)
             Text(message).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 32)
         }
+        .padding(.top, 48)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }

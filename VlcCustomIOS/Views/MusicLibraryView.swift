@@ -44,7 +44,7 @@ private struct LocalAudioList: View {
     var body: some View {
         Group {
             if loading {
-                ProgressView("Đang quét…")
+                ProgressView("Đang quét…").frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).padding(.top, 48)
             } else if songs.isEmpty {
                 ContentUnavailableFallback(
                     title: "Chưa có nhạc",
@@ -214,7 +214,7 @@ private struct SmbAudioBrowser: View {
     @ViewBuilder
     private var list: some View {
         if loading {
-            ProgressView()
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).padding(.top, 48)
         } else if connection != nil && entries.isEmpty {
             ContentUnavailableFallback(title: "Trống", message: "Thư mục này không có thư mục con hay bài hát nào.")
         } else if librarySettings.viewMode == .grid {

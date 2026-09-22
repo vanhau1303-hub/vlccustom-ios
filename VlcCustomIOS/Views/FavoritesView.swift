@@ -72,7 +72,7 @@ private struct FavoriteFolderBrowser: View {
         NavigationStack {
             Group {
                 if loading {
-                    ProgressView("Đang kết nối…")
+                    ProgressView("Đang kết nối…").frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).padding(.top, 48)
                 } else if let status {
                     ContentUnavailableFallback(title: "Không kết nối được", message: status)
                 } else if entries.isEmpty {

@@ -127,7 +127,7 @@ struct SmbBrowserView: View {
     @ViewBuilder
     private var list: some View {
         if loading {
-            ProgressView()
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).padding(.top, 48)
         } else if connection != nil && entries.isEmpty {
             ContentUnavailableFallback(title: "Trống", message: "Thư mục này không có thư mục con hay video nào.")
         } else if librarySettings.viewMode == .grid {

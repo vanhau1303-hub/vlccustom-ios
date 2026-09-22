@@ -34,50 +34,62 @@ private struct LocalImageGrid: View {
     @State private var images: [ImageItem] = []
     @State private var loading = false
     @State private var viewerIndex: Int?
+    @State private var query = ""
+    @State private var sort: MediaSort = .dateDesc
     @ObservedObject private var librarySettings = LibrarySettings.shared
     private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 4)] }
+
+    private var displayed: [ImageItem] {
+        let base = query.isEmpty ? images : images.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        return sort.apply(base)
+    }
 
     var body: some View {
         Group {
             if loading {
-                ProgressView("Đang quét…")
+                ProgressView("Đang quét…").frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).padding(.top, 48)
             } else if images.isEmpty {
                 ContentUnavailableFallback(
                     title: "Chưa có ảnh",
                     message: "Ảnh trong thư mục đã chọn ở tab Video sẽ tự hiện ở đây."
                 )
             } else if librarySettings.viewMode == .list {
-                List(images.indices, id: \.self) { i in
-                    Button { viewerIndex = i } label: {
+                List(displayed) { image in
+                    Button { viewerIndex = displayed.firstIndex(of: image) } label: {
                         HStack(spacing: 12) {
-                            ImageThumbnailCell(source: images[i].source, dataProvider: nil)
+                            ImageThumbnailCell(source: image.source, dataProvider: nil)
                                 .frame(width: librarySettings.thumbnailSize.rowHeight, height: librarySettings.thumbnailSize.rowHeight)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
-                            Text(images[i].name).lineLimit(1)
+                            Text(image.name).lineLimit(1)
                         }
                         .padding(.vertical, 4)
                     }
                 }
                 .listStyle(.plain)
+                .searchable(text: $query)
             } else {
                 ScrollView {
                     LazyVGrid(columns: gridColumns, spacing: 4) {
-                        ForEach(images.indices, id: \.self) { i in
-                            Button { viewerIndex = i } label: {
-                                ImageThumbnailCell(source: images[i].source, dataProvider: nil)
+                        ForEach(displayed) { image in
+                            Button { viewerIndex = displayed.firstIndex(of: image) } label: {
+                                ImageThumbnailCell(source: image.source, dataProvider: nil)
                                     .frame(height: librarySettings.thumbnailSize.gridCell)
                             }
                         }
                     }
                     .padding(4)
                 }
+                .searchable(text: $query)
             }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) { SortMenu(sort: $sort) }
         }
         .fullScreenCover(item: Binding(
             get: { viewerIndex.map { ViewerTarget(index: $0) } },
             set: { viewerIndex = $0?.index }
         )) { target in
-            ImageViewerScreen(items: images, startIndex: target.index, dataProvider: { _ in nil }, onClose: { viewerIndex = nil })
+            ImageViewerScreen(items: displayed, startIndex: target.index, dataProvider: { _ in nil }, onClose: { viewerIndex = nil })
         }
         .task { load() }
     }
@@ -108,10 +120,17 @@ private struct SmbImageBrowser: View {
     @State private var connecting = false
     @State private var loading = false
     @State private var viewerIndex: Int?
+    @State private var query = ""
+    @State private var sort: MediaSort = .nameAsc
     @ObservedObject private var librarySettings = LibrarySettings.shared
     private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 4)] }
 
-    private var images: [SmbEntry] { entries.filter(\.isImage) }
+    private var displayedEntries: [SmbEntry] {
+        let base = query.isEmpty ? entries : entries.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        return sort.apply(base)
+    }
+
+    private var images: [SmbEntry] { displayedEntries.filter(\.isImage) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -131,6 +150,10 @@ private struct SmbImageBrowser: View {
         }
         .padding(.horizontal)
         .dismissesKeyboardOnTap()
+        .searchable(text: $query)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) { SortMenu(sort: $sort) }
+        }
         .fullScreenCover(item: Binding(
             get: { viewerIndex.map { ViewerTarget(index: $0) } },
             set: { viewerIndex = $0?.index }
@@ -187,11 +210,11 @@ private struct SmbImageBrowser: View {
     @ViewBuilder
     private var grid: some View {
         if loading {
-            ProgressView()
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).padding(.top, 48)
         } else if connection != nil && entries.isEmpty {
             ContentUnavailableFallback(title: "Trống", message: "Thư mục này không có thư mục con hay ảnh nào.")
         } else if librarySettings.viewMode == .list {
-            List(entries) { entry in
+            List(displayedEntries) { entry in
                 Button { open(entry) } label: {
                     HStack(spacing: 12) {
                         if entry.isDirectory {
@@ -214,7 +237,7 @@ private struct SmbImageBrowser: View {
         } else {
             ScrollView {
                 LazyVGrid(columns: gridColumns, spacing: 4) {
-                    ForEach(entries) { entry in
+                    ForEach(displayedEntries) { entry in
                         Button { open(entry) } label: {
                             if entry.isDirectory {
                                 VStack {
