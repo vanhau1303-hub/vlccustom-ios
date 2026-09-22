@@ -7,6 +7,12 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
+    # macOS runners cost 10x the minutes of a Linux one (private repo) — don't burn them on doc-only pushes.
+    paths:
+      - "VlcCustomIOS/**"
+      - "project.yml"
+      - "Podfile"
+      - ".github/workflows/build-ipa.yml"
 
 jobs:
   build:
