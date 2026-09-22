@@ -36,7 +36,7 @@ struct PlayerScreen: View {
                                 seeking = editing
                                 if !editing { player.seek(to: sliderValue) }
                             })
-                            .onChange(of: player.progress) { _, new in if !seeking { sliderValue = new } }
+                            .onChange(of: player.progress) { new in if !seeking { sliderValue = new } }
                             Text(format(player.duration)).foregroundStyle(.white).font(.caption).monospacedDigit()
                         }
                         HStack(spacing: 32) {
@@ -58,7 +58,7 @@ struct PlayerScreen: View {
         .statusBarHidden()
         .onAppear { player.playCurrent() }
         .onDisappear { player.stop() }
-        .onChange(of: player.didReachEnd) { _, reached in if reached { playNextOrClose() } }
+        .onChange(of: player.didReachEnd) { reached in if reached { playNextOrClose() } }
         .alert("Không phát được video", isPresented: $player.showError) {
             Button("Đóng", role: .cancel) {}
         } message: {
