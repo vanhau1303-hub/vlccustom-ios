@@ -2,7 +2,7 @@ platform :ios, '16.0'
 
 target 'VlcCustomIOS' do
   use_frameworks!
-  pod 'MobileVLCKit', '~> 3.6.1'
+  pod 'MobileVLCKit'
 end
 
 post_install do |installer|
