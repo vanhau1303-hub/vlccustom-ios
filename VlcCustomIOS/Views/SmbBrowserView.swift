@@ -20,6 +20,7 @@ struct SmbBrowserView: View {
     @State private var addingToPlaylist: SmbEntry?
     @State private var playlists: [Playlist] = []
     @ObservedObject private var librarySettings = LibrarySettings.shared
+    @State private var showScan = false
 
     var body: some View {
         NavigationStack {
@@ -92,10 +93,15 @@ struct SmbBrowserView: View {
             }
             HStack {
                 TextField("Domain (tuỳ chọn)", text: $domain).textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
+                Button { showScan = true } label: { Image(systemName: "network") }
+                    .buttonStyle(.bordered)
                 Button(connecting ? "Đang kết nối…" : "Kết nối") { connect() }
                     .disabled(connecting || host.isEmpty)
                     .buttonStyle(.borderedProminent)
             }
+        }
+        .sheet(isPresented: $showScan) {
+            NetworkScanSheet(onSelect: { ip in host = ip })
         }
     }
 
