@@ -1,0 +1,87 @@
+name: Simulator screenshot
+
+# Builds for the iOS Simulator (no signing needed at all), boots it, installs and launches the app, and screenshots it —
+# so a demo picture can be produced without owning a Mac or an iPhone. Triggered manually or on source changes.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - "VlcCustomIOS/**"
+      - "project.yml"
+      - "Podfile"
+      - ".github/workflows/simulator-screenshot.yml"
+
+jobs:
+  screenshot:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the newest available Xcode
+        run: |
+          set -e
+          LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          echo "Using $LATEST"
+          sudo xcode-select -s "$LATEST"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Install CocoaPods dependencies (MobileVLCKit)
+        run: pod install --repo-update
+
+      - name: List available simulators (debug)
+        run: xcrun simctl list devices available
+
+      - name: Build for the Simulator
+        run: |
+          set -e
+          xcodebuild build \
+            -workspace VlcCustomIOS.xcworkspace \
+            -scheme VlcCustomIOS \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Boot a simulator, install and launch the app, take screenshots
+        run: |
+          set -e
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for runtime, devices in data['devices'].items():
+              if 'iOS' not in runtime:
+                  continue
+              for d in devices:
+                  if 'iPhone' in d['name']:
+                      print(d['udid'])
+                      sys.exit(0)
+          sys.exit(1)
+          ")
+          echo "Using simulator device $DEVICE_ID"
+          xcrun simctl boot "$DEVICE_ID" || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+
+          APP_PATH=$(find build/Build/Products -maxdepth 2 -name "VlcCustomIOS.app" | head -1)
+          echo "App bundle at $APP_PATH"
+          test -n "$APP_PATH"
+
+          xcrun simctl install "$DEVICE_ID" "$APP_PATH"
+          xcrun simctl launch "$DEVICE_ID" com.vlccustom.ios
+          sleep 6
+
+          mkdir -p screenshots
+          xcrun simctl io "$DEVICE_ID" screenshot screenshots/01_local_tab.png
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: VlcCustomIOS-simulator-screenshots
+          path: screenshots/*.png
