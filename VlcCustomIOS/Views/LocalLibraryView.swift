@@ -11,6 +11,7 @@ struct LocalLibraryView: View {
     @State private var sort: MediaSort = .dateDesc
     @State private var addingToPlaylist: VideoItem?
     @State private var playlists: [Playlist] = []
+    @ObservedObject private var librarySettings = LibrarySettings.shared
 
     private var displayed: [VideoItem] {
         let base = query.isEmpty ? videos : videos.filter { $0.name.localizedCaseInsensitiveContains(query) }
@@ -32,10 +33,14 @@ struct LocalLibraryView: View {
                         Button {
                             play(video)
                         } label: {
-                            VStack(alignment: .leading) {
-                                Text(video.name).lineLimit(2)
-                                Text(video.sizeLabel).font(.caption).foregroundStyle(.secondary)
+                            HStack(spacing: 12) {
+                                VideoThumbnailView(source: video.source, size: librarySettings.thumbnailSize.rowHeight)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(video.name).lineLimit(2)
+                                    Text(video.sizeLabel).font(.caption).foregroundStyle(.secondary)
+                                }
                             }
+                            .padding(.vertical, 4)
                         }
                         .contextMenu {
                             Button { addingToPlaylist = video } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
@@ -46,6 +51,7 @@ struct LocalLibraryView: View {
             }
             .navigationTitle("Video trên máy")
             .toolbar {
+                ToolbarItem(placement: .primaryAction) { ThumbnailSizeMenu() }
                 ToolbarItem(placement: .primaryAction) { SortMenu(sort: $sort) }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Chọn thư mục…") { showPicker = true }

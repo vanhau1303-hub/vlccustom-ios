@@ -19,6 +19,7 @@ struct SmbBrowserView: View {
     @State private var sort: MediaSort = .nameAsc
     @State private var addingToPlaylist: SmbEntry?
     @State private var playlists: [Playlist] = []
+    @ObservedObject private var librarySettings = LibrarySettings.shared
 
     var body: some View {
         NavigationStack {
@@ -46,6 +47,7 @@ struct SmbBrowserView: View {
             .navigationTitle("Mạng (SMB)")
             .searchable(text: $query)
             .toolbar {
+                ToolbarItem(placement: .primaryAction) { ThumbnailSizeMenu() }
                 ToolbarItem(placement: .primaryAction) { SortMenu(sort: $sort) }
             }
             .fullScreenCover(item: $playing) { _ in
@@ -124,9 +126,13 @@ struct SmbBrowserView: View {
                 Button {
                     open(entry)
                 } label: {
-                    HStack {
-                        Image(systemName: entry.isDirectory ? "folder.fill" : "film")
-                        VStack(alignment: .leading) {
+                    HStack(spacing: 12) {
+                        if entry.isDirectory {
+                            FolderThumbnailView(size: librarySettings.thumbnailSize.rowHeight)
+                        } else if let connection {
+                            VideoThumbnailView(source: "smb://\(connection.host)/\(entry.path)", size: librarySettings.thumbnailSize.rowHeight)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
                             Text(entry.name).lineLimit(1)
                             if !entry.isDirectory {
                                 Text(ByteCountFormatter.string(fromByteCount: entry.sizeBytes, countStyle: .file))
@@ -134,6 +140,7 @@ struct SmbBrowserView: View {
                             }
                         }
                     }
+                    .padding(.vertical, 4)
                 }
                 .disabled(!entry.isDirectory && !entry.isVideo)
                 .contextMenu {
