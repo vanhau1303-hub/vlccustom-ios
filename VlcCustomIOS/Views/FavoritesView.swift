@@ -66,6 +66,7 @@ private struct FavoriteFolderBrowser: View {
     @State private var status: String?
     @State private var loading = true
     @State private var playing: SmbEntry?
+    @ObservedObject private var librarySettings = LibrarySettings.shared
 
     var body: some View {
         NavigationStack {
@@ -76,14 +77,30 @@ private struct FavoriteFolderBrowser: View {
                     ContentUnavailableFallback(title: "Không kết nối được", message: status)
                 } else if entries.isEmpty {
                     ContentUnavailableFallback(title: "Trống", message: "Thư mục này không có thư mục con hay video nào.")
+                } else if librarySettings.viewMode == .grid {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 8)], spacing: 12) {
+                            ForEach(entries) { entry in
+                                Button { open(entry) } label: {
+                                    if entry.isDirectory {
+                                        FolderGridCell(name: entry.name, cellWidth: librarySettings.thumbnailSize.gridCell)
+                                    } else if let connection {
+                                        VideoGridCell(source: "smb://\(connection.host)/\(entry.path)", name: entry.name, cellWidth: librarySettings.thumbnailSize.gridCell)
+                                    }
+                                }
+                                .disabled(!entry.isDirectory && !entry.isVideo)
+                            }
+                        }
+                        .padding(12)
+                    }
                 } else {
                     List(entries) { entry in
                         Button { open(entry) } label: {
                             HStack(spacing: 12) {
                                 if entry.isDirectory {
-                                    FolderThumbnailView(size: 44)
+                                    FolderThumbnailView(size: librarySettings.thumbnailSize.rowHeight)
                                 } else if let connection {
-                                    VideoThumbnailView(source: "smb://\(connection.host)/\(entry.path)", size: 44)
+                                    VideoThumbnailView(source: "smb://\(connection.host)/\(entry.path)", size: librarySettings.thumbnailSize.rowHeight)
                                 }
                                 Text(entry.name).lineLimit(1)
                             }
@@ -91,10 +108,12 @@ private struct FavoriteFolderBrowser: View {
                         }
                         .disabled(!entry.isDirectory && !entry.isVideo)
                     }
+                    .listStyle(.plain)
                 }
             }
             .navigationTitle(favorite.title)
             .toolbar {
+                ToolbarItem(placement: .primaryAction) { ThumbnailSizeMenu() }
                 ToolbarItem(placement: .confirmationAction) { Button("Đóng") { dismiss() } }
             }
             .fullScreenCover(item: $playing) { _ in

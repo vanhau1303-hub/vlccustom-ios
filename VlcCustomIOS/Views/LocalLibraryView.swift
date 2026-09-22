@@ -28,6 +28,21 @@ struct LocalLibraryView: View {
                         title: "Chưa có video",
                         message: "Chọn một thư mục trong ứng dụng Tệp để liệt kê video trong đó."
                     )
+                } else if librarySettings.viewMode == .grid {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 8)], spacing: 12) {
+                            ForEach(displayed) { video in
+                                Button { play(video) } label: {
+                                    VideoGridCell(source: video.source, name: video.name, cellWidth: librarySettings.thumbnailSize.gridCell)
+                                }
+                                .contextMenu {
+                                    Button { addingToPlaylist = video } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
+                                }
+                            }
+                        }
+                        .padding(12)
+                    }
+                    .searchable(text: $query)
                 } else {
                     List(displayed) { video in
                         Button {

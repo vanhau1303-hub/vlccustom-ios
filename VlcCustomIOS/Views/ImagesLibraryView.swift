@@ -46,6 +46,19 @@ private struct LocalImageGrid: View {
                     title: "Chưa có ảnh",
                     message: "Ảnh trong thư mục đã chọn ở tab Video sẽ tự hiện ở đây."
                 )
+            } else if librarySettings.viewMode == .list {
+                List(images.indices, id: \.self) { i in
+                    Button { viewerIndex = i } label: {
+                        HStack(spacing: 12) {
+                            ImageThumbnailCell(source: images[i].source, dataProvider: nil)
+                                .frame(width: librarySettings.thumbnailSize.rowHeight, height: librarySettings.thumbnailSize.rowHeight)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            Text(images[i].name).lineLimit(1)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .listStyle(.plain)
             } else {
                 ScrollView {
                     LazyVGrid(columns: gridColumns, spacing: 4) {
@@ -115,6 +128,7 @@ private struct SmbImageBrowser: View {
             grid
         }
         .padding(.horizontal)
+        .dismissesKeyboardOnTap()
         .fullScreenCover(item: Binding(
             get: { viewerIndex.map { ViewerTarget(index: $0) } },
             set: { viewerIndex = $0?.index }
@@ -174,6 +188,27 @@ private struct SmbImageBrowser: View {
             ProgressView()
         } else if connection != nil && entries.isEmpty {
             ContentUnavailableFallback(title: "Trống", message: "Thư mục này không có thư mục con hay ảnh nào.")
+        } else if librarySettings.viewMode == .list {
+            List(entries) { entry in
+                Button { open(entry) } label: {
+                    HStack(spacing: 12) {
+                        if entry.isDirectory {
+                            FolderThumbnailView(size: librarySettings.thumbnailSize.rowHeight)
+                        } else if entry.isImage, let connection {
+                            ImageThumbnailCell(
+                                source: "smb://\(connection.host)/\(entry.path)",
+                                dataProvider: { await fetchThumbnailData(entry) }
+                            )
+                            .frame(width: librarySettings.thumbnailSize.rowHeight, height: librarySettings.thumbnailSize.rowHeight)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        Text(entry.name).lineLimit(1)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .disabled(!entry.isDirectory && !entry.isImage)
+            }
+            .listStyle(.plain)
         } else {
             ScrollView {
                 LazyVGrid(columns: gridColumns, spacing: 4) {

@@ -45,6 +45,7 @@ struct SmbBrowserView: View {
                 list
             }
             .padding(.horizontal)
+            .dismissesKeyboardOnTap()
             .navigationTitle("Mạng (SMB)")
             .searchable(text: $query)
             .toolbar {
@@ -127,6 +128,27 @@ struct SmbBrowserView: View {
             ProgressView()
         } else if connection != nil && entries.isEmpty {
             ContentUnavailableFallback(title: "Trống", message: "Thư mục này không có thư mục con hay video nào.")
+        } else if librarySettings.viewMode == .grid {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 8)], spacing: 12) {
+                    ForEach(displayedEntries) { entry in
+                        Button { open(entry) } label: {
+                            if entry.isDirectory {
+                                FolderGridCell(name: entry.name, cellWidth: librarySettings.thumbnailSize.gridCell)
+                            } else if let connection {
+                                VideoGridCell(source: "smb://\(connection.host)/\(entry.path)", name: entry.name, cellWidth: librarySettings.thumbnailSize.gridCell)
+                            }
+                        }
+                        .disabled(!entry.isDirectory && !entry.isVideo)
+                        .contextMenu {
+                            if entry.isVideo {
+                                Button { addingToPlaylist = entry } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
+                            }
+                        }
+                    }
+                }
+                .padding(12)
+            }
         } else {
             List(displayedEntries) { entry in
                 Button {

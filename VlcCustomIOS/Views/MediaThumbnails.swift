@@ -1,11 +1,14 @@
 import SwiftUI
 
 /// A leading thumbnail for a video row — a real frame from the file (local or over `SmbHttpProxy`), cached via
-/// `ThumbnailService`; falls back to a film icon while loading or if a frame couldn't be decoded.
+/// `ThumbnailService`; falls back to a film icon while loading or if a frame couldn't be decoded. Skips fetching
+/// entirely while a video is playing elsewhere in the app (`PlaybackActivity`), so a still-mounted list underneath
+/// the player doesn't compete with it for the same SMB connection/bandwidth.
 struct VideoThumbnailView: View {
     let source: String
     let size: CGFloat
     @State private var image: UIImage?
+    @ObservedObject private var activity = PlaybackActivity.shared
 
     var body: some View {
         ZStack {
@@ -20,6 +23,7 @@ struct VideoThumbnailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .task(id: source) {
             image = nil
+            guard !activity.isBusy else { return }
             let remote: URL?
             if let (host, path) = SmbUri.parse(source) {
                 remote = try? SmbHttpProxy.shared.url(host: host, path: path)
@@ -60,17 +64,64 @@ struct FolderThumbnailView: View {
     }
 }
 
-/// Toolbar control to pick the shared thumbnail size (small/medium/large) used across Video, Nhạc and Ảnh.
+/// Toolbar control to pick the shared view mode (list/grid) and thumbnail size (small/medium/large), used
+/// consistently across Video, Nhạc, Ảnh and Yêu thích.
 struct ThumbnailSizeMenu: View {
     @ObservedObject private var settings = LibrarySettings.shared
 
     var body: some View {
         Menu {
+            Picker("Chế độ xem", selection: $settings.viewMode) {
+                ForEach(LibraryViewMode.allCases) { mode in Label(mode.label, systemImage: mode.icon).tag(mode) }
+            }
             Picker("Cỡ ảnh thu nhỏ", selection: $settings.thumbnailSize) {
                 ForEach(ThumbnailSize.allCases) { size in Text(size.label).tag(size) }
             }
         } label: {
-            Image(systemName: "square.grid.2x2")
+            Image(systemName: settings.viewMode.icon)
         }
+    }
+}
+
+/// A grid cell for a video: thumbnail on top, name below.
+struct VideoGridCell: View {
+    let source: String
+    let name: String
+    let cellWidth: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            VideoThumbnailView(source: source, size: cellWidth * 9 / 16)
+            Text(name).font(.caption2).lineLimit(2).multilineTextAlignment(.leading)
+        }
+        .frame(width: cellWidth, alignment: .leading)
+    }
+}
+
+/// A grid cell for a song.
+struct MusicGridCell: View {
+    let name: String
+    let cellWidth: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            MusicThumbnailView(size: cellWidth)
+            Text(name).font(.caption2).lineLimit(2).multilineTextAlignment(.leading)
+        }
+        .frame(width: cellWidth, alignment: .leading)
+    }
+}
+
+/// A grid cell for a folder.
+struct FolderGridCell: View {
+    let name: String
+    let cellWidth: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            FolderThumbnailView(size: cellWidth)
+            Text(name).font(.caption2).lineLimit(2).multilineTextAlignment(.leading)
+        }
+        .frame(width: cellWidth, alignment: .leading)
     }
 }

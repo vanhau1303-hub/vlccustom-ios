@@ -50,6 +50,21 @@ private struct LocalAudioList: View {
                     title: "Chưa có nhạc",
                     message: "Nhạc trong thư mục đã chọn ở tab Video sẽ tự hiện ở đây."
                 )
+            } else if librarySettings.viewMode == .grid {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 8)], spacing: 12) {
+                        ForEach(displayed) { song in
+                            Button { play(song) } label: {
+                                MusicGridCell(name: song.title, cellWidth: librarySettings.thumbnailSize.gridCell)
+                            }
+                            .contextMenu {
+                                Button { addingToPlaylist = song } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
+                            }
+                        }
+                    }
+                    .padding(12)
+                }
+                .searchable(text: $query)
             } else {
                 List(displayed) { song in
                     Button { play(song) } label: {
@@ -153,6 +168,7 @@ private struct SmbAudioBrowser: View {
             list
         }
         .padding(.horizontal)
+        .dismissesKeyboardOnTap()
         .searchable(text: $query)
         .toolbar {
             ToolbarItem(placement: .primaryAction) { ThumbnailSizeMenu() }
@@ -199,6 +215,22 @@ private struct SmbAudioBrowser: View {
             ProgressView()
         } else if connection != nil && entries.isEmpty {
             ContentUnavailableFallback(title: "Trống", message: "Thư mục này không có thư mục con hay bài hát nào.")
+        } else if librarySettings.viewMode == .grid {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 8)], spacing: 12) {
+                    ForEach(displayed) { entry in
+                        Button { open(entry) } label: {
+                            if entry.isDirectory {
+                                FolderGridCell(name: entry.name, cellWidth: librarySettings.thumbnailSize.gridCell)
+                            } else {
+                                MusicGridCell(name: entry.name, cellWidth: librarySettings.thumbnailSize.gridCell)
+                            }
+                        }
+                        .disabled(!entry.isDirectory && !entry.isAudio)
+                    }
+                }
+                .padding(12)
+            }
         } else {
             List(displayed) { entry in
                 Button { open(entry) } label: {

@@ -1,5 +1,8 @@
 import SwiftUI
 import MobileVLCKit
+import UIKit
+
+enum PlayerDragMode: Equatable { case seek, brightness, volume }
 
 /// Full-screen player for the current item of `PlaybackQueue`: local files are opened directly, SMB files through
 /// `SmbHttpProxy` (so it does not matter whether VLCKit's own build has SMB2/3 support).
@@ -15,13 +18,36 @@ struct PlayerScreen: View {
     @State private var showSpeechDialog = false
     @StateObject private var live = LiveSubtitles.shared
 
+    // Gesture state — mirrors the Android player: horizontal drag seeks, vertical drag on the left half adjusts
+    // screen brightness and on the right half adjusts VLC's own volume, double-tap on either side skips ±10s and
+    // double-tap in the middle toggles play/pause.
+    @State private var dragMode: PlayerDragMode?
+    @State private var dragBaseValue: Double = 0
+    @State private var seekPreviewMs: Int?
+    @State private var gestureHint: String?
+
     private static let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
     var body: some View {
+        GeometryReader { geo in
         ZStack {
             Color.black.ignoresSafeArea()
             VlcVideoView(player: player).ignoresSafeArea()
-                .onTapGesture { withAnimation { showControls.toggle() } }
+                .contentShape(Rectangle())
+                .gesture(
+                    SpatialTapGesture(count: 2)
+                        .onEnded { value in handleDoubleTap(at: value.location, size: geo.size) }
+                        .exclusively(before: SpatialTapGesture(count: 1).onEnded { _ in withAnimation { showControls.toggle() } })
+                )
+                .simultaneousGesture(playerDragGesture(in: geo.size))
+
+            if let gestureHint {
+                Text(gestureHint)
+                    .font(.headline).foregroundStyle(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .background(Color.black.opacity(0.7))
+                    .clipShape(Capsule())
+            }
 
             VStack {
                 Spacer()
@@ -103,8 +129,8 @@ struct PlayerScreen: View {
             }
         }
         .statusBarHidden()
-        .onAppear { player.playCurrent() }
-        .onDisappear { player.stop(); live.stop() }
+        .onAppear { player.playCurrent(); PlaybackActivity.shared.isBusy = true }
+        .onDisappear { player.stop(); live.stop(); PlaybackActivity.shared.isBusy = false }
         .onChange(of: player.didReachEnd) { reached in if reached { playNextOrClose() } }
         .alert("Không phát được video", isPresented: $player.showError) {
             Button("Đóng", role: .cancel) {}
@@ -120,9 +146,80 @@ struct PlayerScreen: View {
         .sheet(isPresented: $showSpeechDialog) {
             SpeechSubtitleDialog(live: live, videoName: queue.current?.name ?? "", durationMs: Int(player.duration), source: queue.current?.source ?? "")
         }
+        }
     }
 
     private var speedLabel: String { "\(player.playbackRate == 1 ? "1" : String(format: "%g", player.playbackRate))x" }
+
+    // MARK: - Gestures
+
+    private func handleDoubleTap(at location: CGPoint, size: CGSize) {
+        if location.x < size.width / 3 {
+            player.skip(ms: -10_000)
+            showHint("-10s")
+        } else if location.x > size.width * 2 / 3 {
+            player.skip(ms: 10_000)
+            showHint("+10s")
+        } else {
+            player.togglePlayPause()
+        }
+    }
+
+    private func playerDragGesture(in size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 16)
+            .onChanged { value in
+                if dragMode == nil {
+                    let dx = abs(value.translation.width)
+                    let dy = abs(value.translation.height)
+                    if dx > dy {
+                        dragMode = .seek
+                        seekPreviewMs = Int(player.time)
+                    } else if value.startLocation.x < size.width / 2 {
+                        dragMode = .brightness
+                        dragBaseValue = Double(UIScreen.main.brightness)
+                    } else {
+                        dragMode = .volume
+                        dragBaseValue = Double(player.mediaPlayer.audio?.volume ?? 100)
+                    }
+                }
+                switch dragMode {
+                case .seek:
+                    guard player.duration > 0 else { return }
+                    let deltaMs = Int(Double(value.translation.width / size.width) * 120_000)
+                    let newMs = max(0, min(Int(player.duration), Int(player.time) + deltaMs))
+                    seekPreviewMs = newMs
+                    gestureHint = (deltaMs >= 0 ? "+" : "") + "\(deltaMs / 1000)s"
+                case .brightness:
+                    let delta = Double(-value.translation.height / size.height)
+                    let newValue = min(1, max(0, dragBaseValue + delta))
+                    UIScreen.main.brightness = newValue
+                    gestureHint = "Độ sáng \(Int(newValue * 100))%"
+                case .volume:
+                    let delta = Double(-value.translation.height / size.height) * 200
+                    let newValue = min(200, max(0, dragBaseValue + delta))
+                    player.mediaPlayer.audio?.volume = Int32(newValue)
+                    gestureHint = "Âm lượng \(Int(newValue))%"
+                case .none:
+                    break
+                }
+            }
+            .onEnded { _ in
+                if dragMode == .seek, let seekPreviewMs, player.duration > 0 {
+                    player.seek(to: Double(seekPreviewMs) / Double(player.duration))
+                }
+                dragMode = nil
+                seekPreviewMs = nil
+                gestureHint = nil
+            }
+    }
+
+    private func showHint(_ text: String) {
+        gestureHint = text
+        Task {
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            if gestureHint == text { gestureHint = nil }
+        }
+    }
 
     private func cycleSpeed() {
         let speeds = Self.speeds
@@ -199,6 +296,11 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     func seek(to fraction: Double) {
         mediaPlayer.position = Float(fraction)
+    }
+
+    func skip(ms: Int32) {
+        let newTime = max(0, mediaPlayer.time.intValue + ms)
+        mediaPlayer.time = VLCTime(int: newTime)
     }
 
     func stop() {

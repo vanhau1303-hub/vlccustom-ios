@@ -35,16 +35,31 @@ enum ThumbnailSize: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// How a folder's contents are laid out — a thumbnail grid, or a single-column list (which already carries the same
+/// thumbnail plus name/size, i.e. what a "detail" view would add).
+enum LibraryViewMode: String, CaseIterable, Identifiable, Codable {
+    case list, grid
+
+    var id: String { rawValue }
+    var label: String { self == .list ? "Danh sách" : "Lưới" }
+    var icon: String { self == .list ? "list.bullet" : "square.grid.2x2" }
+}
+
 final class LibrarySettings: ObservableObject {
     static let shared = LibrarySettings()
 
     @Published var thumbnailSize: ThumbnailSize {
-        didSet { UserDefaults.standard.set(thumbnailSize.rawValue, forKey: Self.key) }
+        didSet { UserDefaults.standard.set(thumbnailSize.rawValue, forKey: Self.sizeKey) }
+    }
+    @Published var viewMode: LibraryViewMode {
+        didSet { UserDefaults.standard.set(viewMode.rawValue, forKey: Self.modeKey) }
     }
 
-    private static let key = "library_thumbnail_size"
+    private static let sizeKey = "library_thumbnail_size"
+    private static let modeKey = "library_view_mode"
 
     private init() {
-        thumbnailSize = ThumbnailSize(rawValue: UserDefaults.standard.string(forKey: Self.key) ?? "") ?? .medium
+        thumbnailSize = ThumbnailSize(rawValue: UserDefaults.standard.string(forKey: Self.sizeKey) ?? "") ?? .medium
+        viewMode = LibraryViewMode(rawValue: UserDefaults.standard.string(forKey: Self.modeKey) ?? "") ?? .list
     }
 }
