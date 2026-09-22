@@ -155,11 +155,13 @@ private struct SmbAudioBrowser: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            connectForm
-            if !savedProfiles.isEmpty { savedServersRow }
-            if let status { Text(status).foregroundStyle(.red).font(.footnote) }
-            if connection != nil {
+            if connection == nil {
+                connectForm
+                if !savedProfiles.isEmpty { savedServersRow }
+                if let status { Text(status).foregroundStyle(.red).font(.footnote) }
+            } else {
                 HStack {
+                    Button { disconnect() } label: { Image(systemName: "chevron.backward") }
                     Text(host + (path.isEmpty ? "" : "/" + path)).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                     Spacer()
                     if !path.isEmpty { Button("↑ Lên trên") { goUp() } }
@@ -310,5 +312,12 @@ private struct SmbAudioBrowser: View {
             path = ""
         }
         Task { await load() }
+    }
+
+    private func disconnect() {
+        connection = nil
+        entries = []
+        path = ""
+        status = nil
     }
 }

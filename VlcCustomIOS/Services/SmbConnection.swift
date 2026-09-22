@@ -100,7 +100,9 @@ actor SmbConnection {
         }
     }
 
-    /// Reads `count` bytes at `offset` from "share/path/file.ext".
+    /// Reads `count` bytes at `offset` from "share/path/file.ext" — one call, one open/close of the remote file.
+    /// Fine for isolated reads (a thumbnail, a whole small image); for a long sequential read (video playback) use
+    /// `readStream` instead, see its doc comment for why.
     func readRange(path: String, offset: Int64, count: Int) async throws -> Data {
         let (share, relative) = Self.split(path)
         let manager = try await managerFor(share: share)
@@ -110,6 +112,18 @@ actor SmbConnection {
         } catch {
             throw SmbError(message: Self.friendlyMessage(error))
         }
+    }
+
+    /// Streams "share/path/file.ext" over `range`, opening the remote file **once** and reading it sequentially —
+    /// unlike `readRange`, which AMSMB2 implements by opening a fresh `SMB2FileHandle` on *every* call. The proxy
+    /// used to call `readRange` once per 1MB chunk to serve a video, which meant one full SMB2 open/close
+    /// round-trip per megabyte — for anything but a tiny file this made playback impractically slow or made it
+    /// never start at all. AMSMB2's own `contents(atPath:range:) -> AsyncThrowingStream<Data, Error>` opens the
+    /// file once and reads it internally at its own "optimized read size", so this is the fix.
+    func readStream(path: String, range: Range<Int64>) async throws -> AsyncThrowingStream<Data, Error> {
+        let (share, relative) = Self.split(path)
+        let manager = try await managerFor(share: share)
+        return manager.contents(atPath: "/" + relative, range: range)
     }
 
     private static func int64(_ value: Any?) -> Int64 {

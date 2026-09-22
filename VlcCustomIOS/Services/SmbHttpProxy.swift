@@ -10,7 +10,6 @@ final class SmbHttpProxy {
     private var listener: NWListener?
     private var port: NWEndpoint.Port = 0
     private let queue = DispatchQueue(label: "SmbHttpProxy")
-    private let chunkSize = 1 << 20 // 1 MB
 
     private init() {}
 
@@ -93,50 +92,54 @@ final class SmbHttpProxy {
         guard let host = params["h"], let path = params["p"] else { close(connection, status: 404); return }
 
         Task {
+            guard let smb = await SmbRegistry.shared.get(host) else { close(connection, status: 404); return }
+
+            let length: Int64
             do {
-                guard let smb = await SmbRegistry.shared.get(host) else { close(connection, status: 404); return }
-                let length = try await smb.fileSize(path: path)
-                var start: Int64 = 0
-                var end: Int64 = length - 1
-                var partial = false
-                if let rangeHeader, let match = rangeHeader.range(of: #"bytes=(\d*)-(\d*)"#, options: .regularExpression) {
-                    let spec = String(rangeHeader[match]).replacingOccurrences(of: "bytes=", with: "")
-                    let bounds = spec.split(separator: "-", omittingEmptySubsequences: false)
-                    if bounds.count == 2 {
-                        if !bounds[0].isEmpty { start = Int64(bounds[0]) ?? 0 }
-                        if !bounds[1].isEmpty { end = Int64(bounds[1]) ?? end }
-                        else if bounds[0].isEmpty, let suffix = Int64(bounds[1]) { start = max(0, length - suffix) }
-                        partial = true
-                    }
-                }
-                end = min(end, length - 1)
-                let contentLength = max(0, end - start + 1)
-
-                var head = "HTTP/1.1 \(partial ? "206 Partial Content" : "200 OK")\r\n"
-                head += "Content-Type: application/octet-stream\r\n"
-                head += "Accept-Ranges: bytes\r\n"
-                head += "Content-Length: \(contentLength)\r\n"
-                if partial { head += "Content-Range: bytes \(start)-\(end)/\(length)\r\n" }
-                head += "Connection: close\r\n\r\n"
-                connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
-
-                if method == "HEAD" || contentLength == 0 { close(connection, status: nil); return }
-
-                var pos = start
-                while pos <= end {
-                    let want = Int(min(Int64(self.chunkSize), end - pos + 1))
-                    let data = try await smb.readRange(path: path, offset: pos, count: want)
-                    if data.isEmpty { break }
-                    let sent: Void = await withCheckedContinuation { cont in
-                        connection.send(content: data, completion: .contentProcessed { _ in cont.resume() })
-                    }
-                    _ = sent
-                    pos += Int64(data.count)
-                }
-                close(connection, status: nil)
+                length = try await smb.fileSize(path: path)
             } catch {
                 close(connection, status: 500)
+                return
             }
+
+            var start: Int64 = 0
+            var end: Int64 = length - 1
+            var partial = false
+            if let rangeHeader, let match = rangeHeader.range(of: #"bytes=(\d*)-(\d*)"#, options: .regularExpression) {
+                let spec = String(rangeHeader[match]).replacingOccurrences(of: "bytes=", with: "")
+                let bounds = spec.split(separator: "-", omittingEmptySubsequences: false)
+                if bounds.count == 2 {
+                    if !bounds[0].isEmpty { start = Int64(bounds[0]) ?? 0 }
+                    if !bounds[1].isEmpty { end = Int64(bounds[1]) ?? end }
+                    else if bounds[0].isEmpty, let suffix = Int64(bounds[1]) { start = max(0, length - suffix) }
+                    partial = true
+                }
+            }
+            end = min(end, length - 1)
+            let contentLength = max(0, end - start + 1)
+
+            var head = "HTTP/1.1 \(partial ? "206 Partial Content" : "200 OK")\r\n"
+            head += "Content-Type: application/octet-stream\r\n"
+            head += "Accept-Ranges: bytes\r\n"
+            head += "Content-Length: \(contentLength)\r\n"
+            if partial { head += "Content-Range: bytes \(start)-\(end)/\(length)\r\n" }
+            head += "Connection: close\r\n\r\n"
+            connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
+
+            if method == "HEAD" || contentLength == 0 { close(connection, status: nil); return }
+
+            do {
+                let stream = try await smb.readStream(path: path, range: start..<(end + 1))
+                for try await chunk in stream where !chunk.isEmpty {
+                    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                        connection.send(content: chunk, completion: .contentProcessed { _ in cont.resume() })
+                    }
+                }
+            } catch {
+                // Streaming failed partway through (server dropped, seek elsewhere) — headers are already sent, so
+                // there is nothing left to do but stop; the player will surface this as a playback error.
+            }
+            close(connection, status: nil)
         }
     }
 
