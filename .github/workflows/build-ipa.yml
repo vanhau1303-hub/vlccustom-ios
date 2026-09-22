@@ -10,9 +10,20 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
+      # The runner ships several Xcode versions side by side; xcode-select defaults to an older one that can be too
+      # old to open the project XcodeGen just wrote (newer XcodeGen writes a newer pbxproj format). Always pick the
+      # newest Xcode actually installed on the runner instead of hard-coding a version that will drift over time.
+      - name: Select the newest available Xcode
+        run: |
+          set -e
+          LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          echo "Using $LATEST"
+          sudo xcode-select -s "$LATEST"
+          xcodebuild -version
 
       - name: Install XcodeGen
         run: brew install xcodegen
