@@ -12,6 +12,7 @@ Bản iOS của VLCcustom (xem bản Android tại [videothumnailvlc](https://gi
 - SwiftUI, iOS 16+
 - [MobileVLCKit](https://code.videolan.org/videolan/VLCKit) (qua CocoaPods) — engine phát video, giống libVLC dùng trong bản Android/Windows.
 - [AMSMB2](https://github.com/amosavian/AMSMB2) (qua Swift Package Manager) — client SMB2/3 thuần Swift.
+- [WhisperKit](https://github.com/argmaxinc/WhisperKit) (qua Swift Package Manager) — nhận dạng giọng nói Whisper chạy on-device qua Core ML, cho phụ đề AI.
 - `Services/SmbHttpProxy.swift`: máy chủ HTTP nội bộ (loopback, viết bằng `Network` framework của Apple, không cần thư viện ngoài), phát lại nội dung file SMB theo Range request để VLCKit mở được bằng URL `http://127.0.0.1:port/...` — cùng cách làm với hai bản kia.
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen): dự án Xcode (`.xcodeproj`) được sinh ra từ `project.yml` thay vì lưu file `.pbxproj` (rất khó chỉnh tay), nên máy Windows này vẫn tạo được cấu hình project mà không cần Xcode.
 
@@ -35,12 +36,16 @@ Dùng **[AltStore](https://altstore.io)**: cài `AltServer` trên chính máy Wi
 - Tab "Ảnh": lưới thumbnail (trên máy + SMB), xem toàn màn hình có zoom (chụm 2 ngón), vuốt chuyển ảnh, trình chiếu tự động.
 - Tab "Playlist": playlist video và playlist nhạc riêng, tạo/xoá/thêm/bớt bài.
 - Tab "Yêu thích": thư mục SMB đã đánh dấu sao, bấm vào tự kết nối lại và mở đúng thư mục.
-- Trình phát video: play/pause, tua, tiến/lùi bài, toàn màn hình, **tốc độ phát** (0.5x–2x), **chọn track âm thanh/phụ đề**, **chỉnh màu** (tương phản/sáng/sắc độ/bão hòa/gamma qua `VLCAdjustFilter`), **khử sọc** (deinterlace), đổi **tỉ lệ khung hình**.
+- Trình phát video: play/pause, tua, tiến/lùi bài, toàn màn hình, **tốc độ phát** (0.5x–2x), **chọn track âm thanh/phụ đề**, **chỉnh màu** (tương phản/sáng/sắc độ/bão hòa/gamma qua `VLCAdjustFilter`), **khử sọc** (deinterlace), đổi **tỉ lệ khung hình**, **phụ đề AI** (nhận dạng giọng nói ngay trên máy bằng [WhisperKit](https://github.com/argmaxinc/WhisperKit)/Core ML, có thể dịch sang ngôn ngữ khác và hiện song ngữ).
 
-Chưa có (dự kiến làm dần — bị giới hạn công nghệ hoặc cần dự án con riêng):
-- Phụ đề AI (nhận dạng giọng nói) và dịch tự động — cần build riêng một mô hình nhận dạng giọng nói cho iOS.
-- Trình Explorer duyệt toàn bộ ổ đĩa — **không thể làm được trên iOS** do giới hạn sandbox của Apple, khác iOS không phải do thiếu công sức.
-- Khoá ứng dụng, sao chép/di chuyển/đổi tên/xoá file, dịch vụ chạy nền giữ kết nối.
+**Về phụ đề AI**: cùng ý tưởng với bản Android (chia video thành cửa sổ 30 giây, nhận dạng dần trong lúc xem, lưu lại để xem tiếp không phải làm lại) nhưng khác công nghệ vì giới hạn của iOS:
+- Nhận dạng giọng nói: [WhisperKit](https://github.com/argmaxinc/WhisperKit) (mô hình Whisper chạy qua Core ML ngay trên máy, tải mô hình lần đầu qua Internet) thay cho whisper.cpp/Moonshine của bản Android — Moonshine không có SDK cho iOS.
+- Tách âm thanh: `AVAssetReader` của Apple (đọc thẳng track âm thanh ra PCM 16kHz mono) thay vì chạy một `MediaPlayer` libVLC thứ hai để transcode như bản Android.
+- Dịch tự động: máy chủ [LibreTranslate](https://libretranslate.com) (tự cấu hình được máy chủ riêng trong hộp thoại) thay cho Google ML Kit — ML Kit không có SDK cho iOS, còn framework dịch của Apple (`Translation`) cần iOS 17.4+ trong khi app đang nhắm iOS 16.
+- Đơn giản hoá so với bản Android: không có bước "khử giọng ồn" bằng VAD riêng (chỉ lọc theo âm lượng), không có ghép 2 file phụ đề độc lập có căn chỉnh khung hình tự động (chỉ có bản song ngữ gốc+dịch của chính phụ đề AI).
+
+Chưa có (dự kiến làm dần):
+- Khoá ứng dụng.
 
 ## Cấu trúc
 ```
@@ -48,10 +53,12 @@ project.yml       # XcodeGen: sinh VlcCustomIOS.xcodeproj
 Podfile            # CocoaPods: MobileVLCKit
 VlcCustomIOS/
   VlcCustomIOSApp.swift
-  Models/           # VideoItem, SmbEntry, SmbServerProfile, AudioItem, ImageItem, Playlist, FavoriteFolder
+  Models/           # VideoItem, SmbEntry, SmbServerProfile, AudioItem, ImageItem, Playlist, FavoriteFolder, LiveCue
   Services/         # SmbConnection (AMSMB2), SmbHttpProxy, LocalVideoService, SmbServerStore, PlaybackQueue,
-                     # ThumbnailService, PlaylistStore, FavoritesStore, MusicPlayer (+MusicQueue), SmbUri
+                     # ThumbnailService, PlaylistStore, FavoritesStore, MusicPlayer (+MusicQueue), SmbUri,
+                     # WhisperEngine, AudioPcmExtractor, LiveSubtitles, SubtitleLayout, Srt, SubtitleTranslator,
+                     # SpeechSettings
   Views/            # ContentView (TabView), LocalLibraryView, SmbBrowserView, MusicLibraryView, ImagesLibraryView,
-                     # PlaylistsView, FavoritesView, PlayerScreen (+picture/track sheets), MusicPlayerScreen,
+                     # PlaylistsView, FavoritesView, PlayerScreen (+picture/track/speech sheets), MusicPlayerScreen,
                      # NowPlayingBar, Sorting (search/sort helper), FolderPicker
 ```

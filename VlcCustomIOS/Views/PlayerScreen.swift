@@ -12,6 +12,8 @@ struct PlayerScreen: View {
     @State private var showControls = true
     @State private var showTrackPicker = false
     @State private var showPictureControls = false
+    @State private var showSpeechDialog = false
+    @StateObject private var live = LiveSubtitles.shared
 
     private static let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
@@ -20,6 +22,38 @@ struct PlayerScreen: View {
             Color.black.ignoresSafeArea()
             VlcVideoView(player: player).ignoresSafeArea()
                 .onTapGesture { withAnimation { showControls.toggle() } }
+
+            VStack {
+                Spacer()
+                if let cue = live.activeCue(at: Int(player.time)) {
+                    Text(cue.text)
+                        .multilineTextAlignment(.center)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Color.black.opacity(0.65))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .padding(.horizontal, 24)
+                }
+            }
+            .padding(.bottom, showControls ? 150 : 28)
+            .allowsHitTesting(false)
+
+            if live.running, let status = live.status {
+                VStack {
+                    HStack {
+                        Text("🎙 \(status)")
+                            .font(.caption).foregroundStyle(.white)
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(Color.black.opacity(0.6))
+                            .clipShape(Capsule())
+                        Spacer()
+                    }
+                    .padding(.top, 60).padding(.horizontal)
+                    Spacer()
+                }
+                .allowsHitTesting(false)
+            }
 
             if showControls {
                 VStack {
@@ -34,6 +68,7 @@ struct PlayerScreen: View {
                         }
                         Button { showTrackPicker = true } label: { Image(systemName: "captions.bubble") }
                         Button { showPictureControls = true } label: { Image(systemName: "slider.horizontal.3") }
+                        Button { showSpeechDialog = true } label: { Image(systemName: "waveform") }
                     }
                     .padding()
                     .foregroundStyle(.white)
@@ -69,7 +104,7 @@ struct PlayerScreen: View {
         }
         .statusBarHidden()
         .onAppear { player.playCurrent() }
-        .onDisappear { player.stop() }
+        .onDisappear { player.stop(); live.stop() }
         .onChange(of: player.didReachEnd) { reached in if reached { playNextOrClose() } }
         .alert("Không phát được video", isPresented: $player.showError) {
             Button("Đóng", role: .cancel) {}
@@ -81,6 +116,9 @@ struct PlayerScreen: View {
         }
         .sheet(isPresented: $showPictureControls) {
             PictureControlsSheet(player: player)
+        }
+        .sheet(isPresented: $showSpeechDialog) {
+            SpeechSubtitleDialog(live: live, videoName: queue.current?.name ?? "", durationMs: Int(player.duration), source: queue.current?.source ?? "")
         }
     }
 
