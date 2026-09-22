@@ -3,23 +3,26 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject private var musicQueue = MusicQueue.shared
     @State private var showMusicPlayer = false
+    /// Lets CI's demo-screenshot workflow launch straight into a given tab (via the `DEMO_TAB` environment
+    /// variable) so every screen can be screenshotted without a real device to tap through them by hand.
+    @State private var selectedTab = Self.initialTab()
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             LocalLibraryView()
-                .tabItem { Label("Video", systemImage: "internaldrive") }
+                .tabItem { Label("Video", systemImage: "internaldrive") }.tag(0)
             SmbBrowserView()
-                .tabItem { Label("Mạng (SMB)", systemImage: "network") }
+                .tabItem { Label("Mạng (SMB)", systemImage: "network") }.tag(1)
             MusicLibraryView()
-                .tabItem { Label("Nhạc", systemImage: "music.note") }
+                .tabItem { Label("Nhạc", systemImage: "music.note") }.tag(2)
             ImagesLibraryView()
-                .tabItem { Label("Ảnh", systemImage: "photo.on.rectangle") }
+                .tabItem { Label("Ảnh", systemImage: "photo.on.rectangle") }.tag(3)
             PlaylistsView()
-                .tabItem { Label("Playlist", systemImage: "list.bullet") }
+                .tabItem { Label("Playlist", systemImage: "list.bullet") }.tag(4)
             FavoritesView()
-                .tabItem { Label("Yêu thích", systemImage: "star") }
+                .tabItem { Label("Yêu thích", systemImage: "star") }.tag(5)
             SettingsView()
-                .tabItem { Label("Cài đặt", systemImage: "gearshape") }
+                .tabItem { Label("Cài đặt", systemImage: "gearshape") }.tag(6)
         }
         .safeAreaInset(edge: .bottom) {
             if musicQueue.current != nil {
@@ -29,6 +32,11 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showMusicPlayer) {
             MusicPlayerScreen(onClose: { showMusicPlayer = false })
         }
+    }
+
+    private static func initialTab() -> Int {
+        guard let raw = ProcessInfo.processInfo.environment["DEMO_TAB"], let value = Int(raw) else { return 0 }
+        return value
     }
 }
 
