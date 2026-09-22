@@ -20,10 +20,18 @@ struct FavoritesView: View {
                     List {
                         ForEach(favorites) { favorite in
                             Button { open(favorite) } label: {
-                                VStack(alignment: .leading) {
-                                    Text(favorite.title).lineLimit(1)
-                                    Text("\(favorite.host)/\(favorite.path)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                HStack(spacing: 12) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 8).fill(Color.yellow.opacity(0.15))
+                                        Image(systemName: "star.fill").foregroundStyle(.yellow)
+                                    }
+                                    .frame(width: 44, height: 44)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(favorite.title).lineLimit(1)
+                                        Text("\(favorite.host)/\(favorite.path)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    }
                                 }
+                                .padding(.vertical, 4)
                             }
                         }
                         .onDelete(perform: delete)
@@ -71,10 +79,15 @@ private struct FavoriteFolderBrowser: View {
                 } else {
                     List(entries) { entry in
                         Button { open(entry) } label: {
-                            HStack {
-                                Image(systemName: entry.isDirectory ? "folder.fill" : "film")
+                            HStack(spacing: 12) {
+                                if entry.isDirectory {
+                                    FolderThumbnailView(size: 44)
+                                } else if let connection {
+                                    VideoThumbnailView(source: "smb://\(connection.host)/\(entry.path)", size: 44)
+                                }
                                 Text(entry.name).lineLimit(1)
                             }
+                            .padding(.vertical, 4)
                         }
                         .disabled(!entry.isDirectory && !entry.isVideo)
                     }

@@ -23,16 +23,19 @@ struct ImagesLibraryView: View {
                 }
             }
             .navigationTitle("Ảnh")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) { ThumbnailSizeMenu() }
+            }
         }
     }
 }
-
-private let gridColumns = [GridItem(.adaptive(minimum: 100), spacing: 4)]
 
 private struct LocalImageGrid: View {
     @State private var images: [ImageItem] = []
     @State private var loading = false
     @State private var viewerIndex: Int?
+    @ObservedObject private var librarySettings = LibrarySettings.shared
+    private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 4)] }
 
     var body: some View {
         Group {
@@ -49,7 +52,7 @@ private struct LocalImageGrid: View {
                         ForEach(images.indices, id: \.self) { i in
                             Button { viewerIndex = i } label: {
                                 ImageThumbnailCell(source: images[i].source, dataProvider: nil)
-                                    .frame(height: 100)
+                                    .frame(height: librarySettings.thumbnailSize.gridCell)
                             }
                         }
                     }
@@ -92,6 +95,8 @@ private struct SmbImageBrowser: View {
     @State private var connecting = false
     @State private var loading = false
     @State private var viewerIndex: Int?
+    @ObservedObject private var librarySettings = LibrarySettings.shared
+    private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 4)] }
 
     private var images: [SmbEntry] { entries.filter(\.isImage) }
 
@@ -179,7 +184,7 @@ private struct SmbImageBrowser: View {
                                     Image(systemName: "folder.fill").font(.system(size: 32))
                                     Text(entry.name).font(.caption2).lineLimit(1)
                                 }
-                                .frame(height: 100)
+                                .frame(height: librarySettings.thumbnailSize.gridCell)
                                 .frame(maxWidth: .infinity)
                                 .background(Color.secondary.opacity(0.1))
                             } else if entry.isImage, let connection {
@@ -187,7 +192,7 @@ private struct SmbImageBrowser: View {
                                     source: "smb://\(connection.host)/\(entry.path)",
                                     dataProvider: { await fetchThumbnailData(entry) }
                                 )
-                                .frame(height: 100)
+                                .frame(height: librarySettings.thumbnailSize.gridCell)
                             }
                         }
                         .disabled(!entry.isDirectory && !entry.isImage)

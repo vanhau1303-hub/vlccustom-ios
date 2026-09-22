@@ -26,7 +26,7 @@ struct PlaylistsView: View {
     }
 }
 
-enum PlaylistKind { case video, music }
+enum PlaylistKind: Equatable { case video, music }
 
 private struct PlaylistListView: View {
     let store: PlaylistStore
@@ -44,10 +44,18 @@ private struct PlaylistListView: View {
                 List {
                     ForEach(playlists) { playlist in
                         Button { opened = playlist } label: {
-                            VStack(alignment: .leading) {
-                                Text(playlist.name)
-                                Text("\(playlist.items.count) mục").font(.caption).foregroundStyle(.secondary)
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.12))
+                                    Image(systemName: "list.bullet").foregroundStyle(Color.accentColor)
+                                }
+                                .frame(width: 44, height: 44)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(playlist.name)
+                                    Text("\(playlist.items.count) mục").font(.caption).foregroundStyle(.secondary)
+                                }
                             }
+                            .padding(.vertical, 4)
                         }
                     }
                     .onDelete(perform: delete)
@@ -95,7 +103,17 @@ private struct PlaylistDetailView: View {
         NavigationStack {
             List {
                 ForEach(items) { item in
-                    Button { play(item) } label: { Text(item.title).lineLimit(2) }
+                    Button { play(item) } label: {
+                        HStack(spacing: 12) {
+                            if kind == .video {
+                                VideoThumbnailView(source: item.uri, size: 44)
+                            } else {
+                                MusicThumbnailView(size: 44)
+                            }
+                            Text(item.title).lineLimit(2)
+                        }
+                        .padding(.vertical, 4)
+                    }
                 }
                 .onDelete(perform: removeItems)
             }

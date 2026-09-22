@@ -34,6 +34,7 @@ private struct LocalAudioList: View {
     @State private var sort: MediaSort = .nameAsc
     @State private var addingToPlaylist: AudioItem?
     @State private var playlists: [Playlist] = []
+    @ObservedObject private var librarySettings = LibrarySettings.shared
 
     private var displayed: [AudioItem] {
         let base = query.isEmpty ? songs : songs.filter { $0.title.localizedCaseInsensitiveContains(query) }
@@ -52,14 +53,15 @@ private struct LocalAudioList: View {
             } else {
                 List(displayed) { song in
                     Button { play(song) } label: {
-                        HStack {
-                            Image(systemName: "music.note")
-                            VStack(alignment: .leading) {
+                        HStack(spacing: 12) {
+                            MusicThumbnailView(size: librarySettings.thumbnailSize.rowHeight)
+                            VStack(alignment: .leading, spacing: 2) {
                                 Text(song.title).lineLimit(1)
                                 Text(ByteCountFormatter.string(fromByteCount: song.sizeBytes, countStyle: .file))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
+                        .padding(.vertical, 4)
                     }
                     .contextMenu {
                         Button { addingToPlaylist = song } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
@@ -69,6 +71,7 @@ private struct LocalAudioList: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .primaryAction) { ThumbnailSizeMenu() }
             ToolbarItem(placement: .primaryAction) { SortMenu(sort: $sort) }
         }
         .confirmationDialog("Thêm vào playlist", isPresented: Binding(get: { addingToPlaylist != nil }, set: { if !$0 { addingToPlaylist = nil } }), titleVisibility: .visible) {
@@ -128,6 +131,7 @@ private struct SmbAudioBrowser: View {
     @State private var loading = false
     @State private var query = ""
     @State private var sort: MediaSort = .nameAsc
+    @ObservedObject private var librarySettings = LibrarySettings.shared
 
     private var displayed: [SmbEntry] {
         let base = query.isEmpty ? entries : entries.filter { $0.name.localizedCaseInsensitiveContains(query) }
@@ -151,6 +155,7 @@ private struct SmbAudioBrowser: View {
         .padding(.horizontal)
         .searchable(text: $query)
         .toolbar {
+            ToolbarItem(placement: .primaryAction) { ThumbnailSizeMenu() }
             ToolbarItem(placement: .primaryAction) { SortMenu(sort: $sort) }
         }
         .task { savedProfiles = SmbServerStore.load() }
@@ -197,9 +202,13 @@ private struct SmbAudioBrowser: View {
         } else {
             List(displayed) { entry in
                 Button { open(entry) } label: {
-                    HStack {
-                        Image(systemName: entry.isDirectory ? "folder.fill" : "music.note")
-                        VStack(alignment: .leading) {
+                    HStack(spacing: 12) {
+                        if entry.isDirectory {
+                            FolderThumbnailView(size: librarySettings.thumbnailSize.rowHeight)
+                        } else {
+                            MusicThumbnailView(size: librarySettings.thumbnailSize.rowHeight)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
                             Text(entry.name).lineLimit(1)
                             if !entry.isDirectory {
                                 Text(ByteCountFormatter.string(fromByteCount: entry.sizeBytes, countStyle: .file))
@@ -207,6 +216,7 @@ private struct SmbAudioBrowser: View {
                             }
                         }
                     }
+                    .padding(.vertical, 4)
                 }
                 .disabled(!entry.isDirectory && !entry.isAudio)
             }
