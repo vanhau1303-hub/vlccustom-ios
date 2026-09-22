@@ -285,6 +285,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             guard let local = URL(string: item.source) else { return }
             url = local
         }
+        PlaybackDiagnostics.append("player: playCurrent name=\(item.name) url=\(url.absoluteString)")
         let media = VLCMedia(url: url)
         mediaPlayer.media = media
         mediaPlayer.play()
@@ -392,6 +393,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     func mediaPlayerStateChanged(_ notification: Notification) {
         DispatchQueue.main.async {
             self.isPlaying = self.mediaPlayer.isPlaying
+            PlaybackDiagnostics.append("player: state=\(self.mediaPlayer.state.rawValue)")
             switch self.mediaPlayer.state {
             case .ended: self.didReachEnd = true
             case .error: self.showError = true

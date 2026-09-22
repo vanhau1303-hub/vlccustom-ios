@@ -63,6 +63,14 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                Section {
+                    ShareLink(item: PlaybackDiagnostics.logURL) {
+                        Label("Chia sẻ log chẩn đoán", systemImage: "square.and.arrow.up")
+                    }
+                    Button("Xoá log", role: .destructive) { PlaybackDiagnostics.clear() }
+                } footer: {
+                    Text("Nếu video không phát được, hãy thử phát lại (để lỗi ghi vào log) rồi chia sẻ log này để chẩn đoán đúng nguyên nhân.")
+                }
             }
             .navigationTitle("VLCcustom cho iOS")
         }

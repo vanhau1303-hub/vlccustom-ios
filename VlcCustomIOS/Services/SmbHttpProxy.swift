@@ -91,13 +91,20 @@ final class SmbHttpProxy {
         let params = Self.parseQuery(String(query))
         guard let host = params["h"], let path = params["p"] else { close(connection, status: 404); return }
 
+        PlaybackDiagnostics.append("proxy: \(method) \(path) range=\(rangeHeader ?? "-")")
+
         Task {
-            guard let smb = await SmbRegistry.shared.get(host) else { close(connection, status: 404); return }
+            guard let smb = await SmbRegistry.shared.get(host) else {
+                PlaybackDiagnostics.append("proxy: no SMB connection for host \(host) — 404")
+                close(connection, status: 404)
+                return
+            }
 
             let length: Int64
             do {
                 length = try await smb.fileSize(path: path)
             } catch {
+                PlaybackDiagnostics.append("proxy: fileSize failed for \(path): \(error.localizedDescription) — 500")
                 close(connection, status: 500)
                 return
             }
@@ -125,22 +132,27 @@ final class SmbHttpProxy {
             if partial { head += "Content-Range: bytes \(start)-\(end)/\(length)\r\n" }
             head += "Connection: close\r\n\r\n"
             connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
+            PlaybackDiagnostics.append("proxy: \(partial ? "206" : "200") length=\(length) contentLength=\(contentLength) [\(start)-\(end)]")
 
             if method == "HEAD" || contentLength == 0 { close(connection, status: nil); return }
 
             // Held for the whole streamed read, not just the call that starts it — a thumbnail fetch (or another
             // player request) must wait its turn instead of racing this one for the connection's SMB2 credits.
             await smb.acquireReadSlot()
+            var sentBytes: Int64 = 0
             do {
                 let stream = try await smb.readStream(path: path, range: start..<(end + 1))
                 for try await chunk in stream where !chunk.isEmpty {
                     await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
                         connection.send(content: chunk, completion: .contentProcessed { _ in cont.resume() })
                     }
+                    sentBytes += Int64(chunk.count)
                 }
+                PlaybackDiagnostics.append("proxy: stream finished, sent \(sentBytes)/\(contentLength) bytes")
             } catch {
                 // Streaming failed partway through (server dropped, seek elsewhere) — headers are already sent, so
                 // there is nothing left to do but stop; the player will surface this as a playback error.
+                PlaybackDiagnostics.append("proxy: stream error after \(sentBytes)/\(contentLength) bytes: \(error.localizedDescription)")
             }
             await smb.releaseReadSlot()
             close(connection, status: nil)
