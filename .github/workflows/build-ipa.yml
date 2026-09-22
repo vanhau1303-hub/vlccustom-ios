@@ -1,0 +1,56 @@
+name: Build unsigned IPA
+
+# Runs entirely on GitHub's macOS cloud runner — nobody needs to own a Mac.
+# Trigger from Windows with: gh workflow run build-ipa.yml
+# or just by pushing to main.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Install CocoaPods dependencies (MobileVLCKit)
+        run: pod install --repo-update
+
+      - name: Resolve Swift Package dependencies (AMSMB2)
+        run: xcodebuild -resolvePackageDependencies -workspace VlcCustomIOS.xcworkspace -scheme VlcCustomIOS
+
+      - name: Archive (unsigned)
+        run: |
+          set -e
+          xcodebuild archive \
+            -workspace VlcCustomIOS.xcworkspace \
+            -scheme VlcCustomIOS \
+            -sdk iphoneos \
+            -configuration Release \
+            -archivePath build/VlcCustomIOS.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          test -d build/VlcCustomIOS.xcarchive
+
+      - name: Package the .ipa (unsigned — AltStore/Sideloadly re-sign it on install)
+        run: |
+          set -e
+          APP_PATH="build/VlcCustomIOS.xcarchive/Products/Applications/VlcCustomIOS.app"
+          test -d "$APP_PATH"
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" build/Payload/
+          cd build && zip -r -q VlcCustomIOS.ipa Payload
+          ls -la VlcCustomIOS.ipa
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: VlcCustomIOS-unsigned-ipa
+          path: build/VlcCustomIOS.ipa
+          retention-days: 30

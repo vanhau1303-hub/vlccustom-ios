@@ -1,0 +1,43 @@
+name: VlcCustomIOS
+options:
+  bundleIdPrefix: com.vlccustom
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+packages:
+  AMSMB2:
+    url: https://github.com/amosavian/AMSMB2.git
+    from: 8.2.0
+targets:
+  VlcCustomIOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: VlcCustomIOS
+    info:
+      path: VlcCustomIOS/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSLocalNetworkUsageDescription: "Cần quyền mạng cục bộ để duyệt và phát video từ máy tính chia sẻ qua SMB trong cùng mạng Wi-Fi."
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.vlccustom.ios
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: false
+        CODE_SIGNING_ALLOWED: false
+        DEVELOPMENT_TEAM: ""
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+    dependencies:
+      - package: AMSMB2
