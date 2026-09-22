@@ -21,7 +21,7 @@ enum PlaybackDiagnostics {
         handle.seekToEndOfFile()
         let logger = VLCFileLogger(fileHandle: handle)
         logger.level = .debug
-        VLCLibrary.sharedLibrary().loggers = [logger]
+        VLCLibrary.shared().loggers = [logger]
         fileLogger = logger
     }
 
