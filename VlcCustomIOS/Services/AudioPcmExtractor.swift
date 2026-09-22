@@ -31,7 +31,7 @@ enum AudioPcmExtractor {
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16_000,
             AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepth: 16,
+            AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsBigEndianKey: false,
             AVLinearPCMIsFloatKey: false,
             AVLinearPCMIsNonInterleaved: false,
