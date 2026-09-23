@@ -13,9 +13,9 @@ struct SmbError: LocalizedError {
 /// from the several concurrent reads the HTTP proxy makes.
 actor SmbConnection {
     nonisolated let host: String
-    private let username: String
-    private let password: String
-    private let domain: String
+    nonisolated let username: String
+    nonisolated let password: String
+    nonisolated let domain: String
     private var shareManagers: [String: Task<SMB2Manager, Error>] = [:]
 
     init(host: String, username: String, password: String, domain: String) {
@@ -231,6 +231,15 @@ actor SmbRegistry {
     private var connections: [String: SmbConnection] = [:]
 
     func get(_ host: String) -> SmbConnection? { connections[host.lowercased()] }
+
+    /// Login to hand to libVLC's own SMB module for `host`: the live connection's, else the saved one.
+    func login(for host: String) -> SmbPlayback.Login? {
+        if let live = get(host) {
+            return SmbPlayback.Login(username: live.username, password: live.password, domain: live.domain)
+        }
+        guard let profile = SmbServerStore.load().first(where: { $0.host.lowercased() == host.lowercased() }) else { return nil }
+        return SmbPlayback.Login(username: profile.username, password: SmbServerStore.password(for: profile.host), domain: profile.domain)
+    }
 
     /// The live connection for `host`, or a fresh one from the saved login — so a video opened from Playlist or
     /// Yêu thích still plays when the user has not browsed to that server yet since launching the app.

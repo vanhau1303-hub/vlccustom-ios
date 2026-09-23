@@ -269,30 +269,65 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         mediaPlayer.delegate = self
     }
 
-    /// Plays `PlaybackQueue.shared.current`: a local file directly, an SMB file through the loopback proxy.
+    /// Which way the current SMB item is being played, and the timer that gives up on the direct route if it has
+    /// not started playing in time.
+    private var smbRoute: SmbPlaybackRoute = .direct
+    private var fallbackWork: DispatchWorkItem?
+    private var playGeneration = 0
+
+    /// Plays `PlaybackQueue.shared.current`: a local file directly; an SMB file first straight through libVLC's own
+    /// SMB2 module (like the official VLC for iOS app), falling back to the AMSMB2 loopback proxy if that errors
+    /// out or has not started playing within 20s.
     func playCurrent() {
         guard let item = PlaybackQueue.shared.current else { return }
         didReachEnd = false
-        let url: URL
-        if item.isSmb {
-            let withoutScheme = item.source.dropFirst("smb://".count)
-            guard let slash = withoutScheme.firstIndex(of: "/") else { return }
-            let host = String(withoutScheme[withoutScheme.startIndex..<slash])
-            let path = String(withoutScheme[withoutScheme.index(after: slash)...])
-            guard let proxied = try? SmbHttpProxy.shared.url(host: host, path: path) else { showError = true; return }
-            url = proxied
-        } else {
+        smbRoute = .direct
+        start(item)
+    }
+
+    private func start(_ item: VideoItem) {
+        fallbackWork?.cancel()
+        playGeneration += 1
+        let generation = playGeneration
+        guard let (host, path) = SmbUri.parse(item.source) else {
             guard let local = URL(string: item.source) else { return }
-            url = local
+            PlaybackDiagnostics.append("player: local \(item.name)")
+            mediaPlayer.media = VLCMedia(url: local)
+            mediaPlayer.play()
+            return
         }
-        PlaybackDiagnostics.append("player: playCurrent name=\(item.name) url=\(url.absoluteString)")
-        let media = VLCMedia(url: url)
-        if item.isSmb {
-            // A bit more buffer than VLC's 1s default: Wi-Fi to a home PC jitters, and the loopback proxy adds a hop.
-            media.addOption(":network-caching=1500")
+        let route = smbRoute
+        Task { @MainActor in
+            let login = await SmbRegistry.shared.login(for: host)
+            guard generation == self.playGeneration else { return }
+            PlaybackDiagnostics.append("player: \(item.name) route=\(route.rawValue)")
+            guard let media = SmbPlayback.media(host: host, path: path, route: route, login: login) else {
+                self.fallbackOrFail(item, reason: "could not build media")
+                return
+            }
+            self.mediaPlayer.media = media
+            self.mediaPlayer.play()
+            if route == .direct {
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self, generation == self.playGeneration, self.time == 0 else { return }
+                    self.fallbackOrFail(item, reason: "direct route not playing after 20s")
+                }
+                self.fallbackWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: work)
+            }
         }
-        mediaPlayer.media = media
-        mediaPlayer.play()
+    }
+
+    /// Direct route failed → retry once through the proxy; proxy failed too → show the error.
+    private func fallbackOrFail(_ item: VideoItem, reason: String) {
+        PlaybackDiagnostics.append("player: \(smbRoute.rawValue) failed (\(reason))")
+        if item.isSmb && smbRoute == .direct {
+            smbRoute = .proxy
+            mediaPlayer.stop()
+            start(item)
+        } else {
+            showError = true
+        }
     }
 
     func togglePlayPause() {
@@ -309,6 +344,8 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     func stop() {
+        fallbackWork?.cancel()
+        playGeneration += 1
         mediaPlayer.stop()
     }
 
@@ -400,7 +437,9 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             PlaybackDiagnostics.append("player: state=\(self.mediaPlayer.state.rawValue)")
             switch self.mediaPlayer.state {
             case .ended: self.didReachEnd = true
-            case .error: self.showError = true
+            case .error:
+                if let item = PlaybackQueue.shared.current { self.fallbackOrFail(item, reason: "VLC error") }
+                else { self.showError = true }
             default: break
             }
         }

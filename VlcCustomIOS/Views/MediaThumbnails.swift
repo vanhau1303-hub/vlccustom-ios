@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A leading thumbnail for a video row — a real frame from the file (local or over `SmbHttpProxy`), cached via
+/// A leading thumbnail for a video row — a real frame from the file (local via AVFoundation, SMB via libVLC's own thumbnailer), cached via
 /// `ThumbnailService`; falls back to a film icon while loading or if a frame couldn't be decoded. Skips fetching
 /// entirely while a video is playing elsewhere in the app (`PlaybackActivity`), so a still-mounted list underneath
 /// the player doesn't compete with it for the same SMB connection/bandwidth.
@@ -24,13 +24,11 @@ struct VideoThumbnailView: View {
         .task(id: source) {
             image = nil
             guard !activity.isBusy else { return }
-            let remote: URL?
             if let (host, path) = SmbUri.parse(source) {
-                remote = try? SmbHttpProxy.shared.url(host: host, path: path)
+                image = await ThumbnailService.shared.smbVideoThumbnail(source: source, host: host, path: path)
             } else {
-                remote = nil
+                image = await ThumbnailService.shared.videoThumbnail(source: source, remoteURL: nil)
             }
-            image = await ThumbnailService.shared.videoThumbnail(source: source, remoteURL: remote)
         }
     }
 }

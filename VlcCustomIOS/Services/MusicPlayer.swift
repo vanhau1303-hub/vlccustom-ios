@@ -76,24 +76,39 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         configureRemoteCommands()
     }
 
+    private var smbRoute: SmbPlaybackRoute = .direct
+    private var playGeneration = 0
+
+    /// Same routing as the video player: SMB goes straight through libVLC's SMB2 module first, then the proxy.
     func playCurrent() {
         guard let item = MusicQueue.shared.current else { return }
         didReachEnd = false
-        let url: URL
-        if item.isSmb {
-            let withoutScheme = item.source.dropFirst("smb://".count)
-            guard let slash = withoutScheme.firstIndex(of: "/") else { return }
-            let host = String(withoutScheme[withoutScheme.startIndex..<slash])
-            let path = String(withoutScheme[withoutScheme.index(after: slash)...])
-            guard let proxied = try? SmbHttpProxy.shared.url(host: host, path: path) else { showError = true; return }
-            url = proxied
-        } else {
+        smbRoute = .direct
+        start(item)
+    }
+
+    private func start(_ item: AudioItem) {
+        playGeneration += 1
+        let generation = playGeneration
+        guard let (host, path) = SmbUri.parse(item.source) else {
             guard let local = URL(string: item.source) else { return }
-            url = local
+            mediaPlayer.media = VLCMedia(url: local)
+            mediaPlayer.play()
+            updateNowPlaying()
+            return
         }
-        mediaPlayer.media = VLCMedia(url: url)
-        mediaPlayer.play()
-        updateNowPlaying()
+        let route = smbRoute
+        Task { @MainActor in
+            let login = await SmbRegistry.shared.login(for: host)
+            guard generation == self.playGeneration else { return }
+            guard let media = SmbPlayback.media(host: host, path: path, route: route, login: login) else {
+                self.showError = true
+                return
+            }
+            self.mediaPlayer.media = media
+            self.mediaPlayer.play()
+            self.updateNowPlaying()
+        }
     }
 
     func togglePlayPause() {
@@ -153,7 +168,13 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
                 self.didReachEnd = true
                 self.playNext()
             case .error:
-                self.showError = true
+                if self.smbRoute == .direct, let item = MusicQueue.shared.current, item.isSmb {
+                    PlaybackDiagnostics.append("music: direct failed, retrying through proxy")
+                    self.smbRoute = .proxy
+                    self.start(item)
+                } else {
+                    self.showError = true
+                }
             default: break
             }
             self.updateNowPlaying()
