@@ -408,8 +408,13 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     func mediaPlayerTimeChanged(_ notification: Notification) {
         DispatchQueue.main.async {
+            let previous = self.time
             self.time = self.mediaPlayer.time.intValue
             self.duration = self.mediaPlayer.media?.length.intValue ?? 0
+            // Proof of actual playback in the log (every ~5s of media time), not just "state=playing".
+            if self.time / 5000 != previous / 5000 || (previous == 0 && self.time > 0) {
+                PlaybackDiagnostics.append("player: time=\(self.time)ms / \(self.duration)ms")
+            }
         }
     }
 }
