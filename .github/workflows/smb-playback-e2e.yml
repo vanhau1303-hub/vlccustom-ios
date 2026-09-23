@@ -64,7 +64,8 @@ jobs:
       - name: Start Samba
         run: |
           set -e
-          SMBD=$(find "$(brew --prefix samba)/" -name smbd -type f -perm -u+x | head -1)
+          # Homebrew installs it as samba-dot-org-smbd so it does not clash with macOS's own smbd.
+          SMBD=$(find "$(brew --prefix samba)/" \( -name samba-dot-org-smbd -o -name smbd \) \( -type f -o -type l \) | head -1)
           SMBPASSWD=$(find "$(brew --prefix samba)/" -name smbpasswd -type f -perm -u+x | head -1)
           echo "smbd=$SMBD smbpasswd=$SMBPASSWD"
           mkdir -p /tmp/smb/{run,lock,state,cache,private,log}
@@ -89,8 +90,10 @@ jobs:
             valid users = $(whoami)
           EOF
           printf 'testpass\ntestpass\n' | sudo "$SMBPASSWD" -c /tmp/smb/smb.conf -s -a "$(whoami)"
+          test -n "$SMBD"
           sudo "$SMBD" --daemon --configfile=/tmp/smb/smb.conf
           sleep 3
+          sudo lsof -nP -iTCP:4450 -sTCP:LISTEN || true
           SMBCLIENT=$(find "$(brew --prefix samba)/" -name smbclient -type f -perm -u+x | head -1)
           "$SMBCLIENT" //127.0.0.1/media -p 4450 -U "$(whoami)%testpass" -m SMB3 -c 'ls Phim/*'
 
