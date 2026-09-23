@@ -69,7 +69,11 @@ jobs:
           SMBPASSWD=$(find "$(brew --prefix samba)/" -name smbpasswd -type f -perm -u+x | head -1)
           echo "smbd=$SMBD smbpasswd=$SMBPASSWD"
           mkdir -p /tmp/smb/{run,lock,state,cache,private,log}
-          cat > /tmp/smb/smb.conf <<EOF
+          # Samba's default config path: samba-dcerpcd (which serves share enumeration, what the app's listShares
+          # needs) is spawned on demand and reads only this, not smbd's --configfile.
+          CONF="$(brew --prefix)/etc/smb.conf"
+          mkdir -p "$(dirname "$CONF")"
+          cat > "$CONF" <<EOF
           [global]
             server role = standalone server
             server min protocol = SMB2
@@ -89,13 +93,14 @@ jobs:
             read only = yes
             valid users = $(whoami)
           EOF
-          printf 'testpass\ntestpass\n' | sudo "$SMBPASSWD" -c /tmp/smb/smb.conf -s -a "$(whoami)"
+          printf 'testpass\ntestpass\n' | sudo "$SMBPASSWD" -c "$CONF" -s -a "$(whoami)"
           test -n "$SMBD"
-          sudo "$SMBD" --daemon --configfile=/tmp/smb/smb.conf
+          sudo "$SMBD" --daemon --configfile="$CONF"
           sleep 3
           sudo lsof -nP -iTCP:4450 -sTCP:LISTEN || true
           SMBCLIENT=$(find "$(brew --prefix samba)/" -name smbclient -type f -perm -u+x | head -1)
           "$SMBCLIENT" //127.0.0.1/media -p 4450 -U "$(whoami)%testpass" -m SMB3 -c 'ls Phim/*'
+          "$SMBCLIENT" -L 127.0.0.1 -p 4450 -U "$(whoami)%testpass" -m SMB3
 
       - name: Play each clip over SMB in the Simulator
         run: |
