@@ -287,6 +287,10 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         }
         PlaybackDiagnostics.append("player: playCurrent name=\(item.name) url=\(url.absoluteString)")
         let media = VLCMedia(url: url)
+        if item.isSmb {
+            // A bit more buffer than VLC's 1s default: Wi-Fi to a home PC jitters, and the loopback proxy adds a hop.
+            media.addOption(":network-caching=1500")
+        }
         mediaPlayer.media = media
         mediaPlayer.play()
     }

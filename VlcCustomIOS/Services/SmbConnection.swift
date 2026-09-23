@@ -16,7 +16,7 @@ actor SmbConnection {
     private let username: String
     private let password: String
     private let domain: String
-    private var shareManagers: [String: SMB2Manager] = [:]
+    private var shareManagers: [String: Task<SMB2Manager, Error>] = [:]
 
     init(host: String, username: String, password: String, domain: String) {
         self.host = host
@@ -30,14 +30,16 @@ actor SmbConnection {
     // The Android app hit this exact failure mode ("Failed to acquire credits in time") when concurrent SMB2 reads
     // — e.g. thumbnails generating while a video streams — outran the server's SMB2 credit window (its flow-control
     // budget for outstanding requests on one connection), and fixed it with a gate limiting concurrent reads. Doing
-    // the same here: every actual data read (readRange, readStream) goes through this before touching the network,
-    // so a video stream and any thumbnail fetches never race each other for the same connection's credits.
+    // the same here for whole-file reads (`readRange`: SMB image thumbnails/viewer). Video streaming
+    // (`streamContents`) deliberately does NOT take this gate: VLC opens overlapping HTTP requests for one file
+    // (probe the start, jump to the index at the end, come back), and holding an exclusive slot per request
+    // deadlocked those against each other. Each stream reads one chunk at a time with backpressure instead, so it
+    // never floods the connection.
 
     private var activeReads = 0
     private var readWaiters: [CheckedContinuation<Void, Never>] = []
 
-    /// Waits for exclusive access to read from this connection. Callers doing a long sequential read (the HTTP
-    /// proxy streaming a video) should hold the slot for the whole read, releasing only once fully done.
+    /// Waits for exclusive access to read from this connection (whole-file reads only, see above).
     func acquireReadSlot() async {
         if activeReads == 0 {
             activeReads += 1
@@ -77,15 +79,37 @@ actor SmbConnection {
         }
     }
 
+    /// One connected manager per share. Stored as a Task so concurrent first callers (the player's first request
+    /// and a thumbnail, say) share one connect instead of racing to open two.
     private func managerFor(share: String) async throws -> SMB2Manager {
-        if let existing = shareManagers[share] { return existing }
+        if let existing = shareManagers[share] {
+            do { return try await existing.value } catch { shareManagers[share] = nil }
+        }
+        let base = try baseManager()
+        let task = Task { () throws -> SMB2Manager in
+            try await base.connectShare(name: share)
+            return base
+        }
+        shareManagers[share] = task
         do {
-            let manager = try baseManager()
-            try await manager.connectShare(name: share)
-            shareManagers[share] = manager
-            return manager
+            return try await task.value
         } catch {
+            shareManagers[share] = nil
             throw SmbError(message: Self.friendlyMessage(error))
+        }
+    }
+
+    /// Runs `body` on the share's manager, and if it fails, reconnects the share once and tries again — Windows
+    /// drops idle SMB sessions (and iOS drops sockets while the app sits in the background), after which the cached
+    /// manager fails every call until it is replaced.
+    private func withManager<T>(share: String, _ body: (SMB2Manager) async throws -> T) async throws -> T {
+        let manager = try await managerFor(share: share)
+        do {
+            return try await body(manager)
+        } catch {
+            shareManagers[share] = nil
+            let fresh = try await managerFor(share: share)
+            return try await body(fresh)
         }
     }
 
@@ -97,9 +121,10 @@ actor SmbConnection {
             return shares.map { SmbEntry(name: $0, path: $0, isDirectory: true, sizeBytes: 0, lastModified: .distantPast) }
         }
         let (share, relative) = Self.split(trimmed)
-        let manager = try await managerFor(share: share)
         do {
-            let items = try await manager.contentsOfDirectory(atPath: relative.isEmpty ? "/" : "/" + relative)
+            let items = try await withManager(share: share) { manager in
+                try await manager.contentsOfDirectory(atPath: relative.isEmpty ? "/" : "/" + relative)
+            }
             let entries: [SmbEntry] = items.compactMap { info in
                 guard let name = info[.nameKey] as? String, name != ".", name != ".." else { return nil }
                 if name.hasSuffix("$") { return nil }
@@ -120,9 +145,10 @@ actor SmbConnection {
     /// Size of "share/path/file.ext".
     func fileSize(path: String) async throws -> Int64 {
         let (share, relative) = Self.split(path)
-        let manager = try await managerFor(share: share)
         do {
-            let attrs = try await manager.attributesOfItem(atPath: "/" + relative)
+            let attrs = try await withManager(share: share) { manager in
+                try await manager.attributesOfItem(atPath: "/" + relative)
+            }
             return Self.int64(attrs[.fileSizeKey])
         } catch {
             throw SmbError(message: Self.friendlyMessage(error))
@@ -131,30 +157,47 @@ actor SmbConnection {
 
     /// Reads `count` bytes at `offset` from "share/path/file.ext" — one call, one open/close of the remote file.
     /// Fine for isolated reads (a thumbnail, a whole small image); for a long sequential read (video playback) use
-    /// `readStream` instead, see its doc comment for why.
+    /// `streamContents` instead.
     func readRange(path: String, offset: Int64, count: Int) async throws -> Data {
         let (share, relative) = Self.split(path)
-        let manager = try await managerFor(share: share)
         let range: Range<Int64> = offset..<(offset + Int64(count))
         await acquireReadSlot()
         defer { releaseReadSlot() }
         do {
-            return try await manager.contents(atPath: "/" + relative, range: range)
+            return try await withManager(share: share) { (manager) -> Data in
+                try await manager.contents(atPath: "/" + relative, range: range)
+            }
         } catch {
             throw SmbError(message: Self.friendlyMessage(error))
         }
     }
 
-    /// Streams "share/path/file.ext" over `range`, opening the remote file **once** and reading it sequentially —
-    /// unlike `readRange`, which AMSMB2 implements by opening a fresh `SMB2FileHandle` on *every* call. The proxy
-    /// used to call `readRange` once per 1MB chunk to serve a video, which meant one full SMB2 open/close
-    /// round-trip per megabyte — for anything but a tiny file this made playback impractically slow or made it
-    /// never start at all. AMSMB2's own `contents(atPath:range:) -> AsyncThrowingStream<Data, Error>` opens the
-    /// file once and reads it internally at its own "optimized read size", so this is the fix.
-    func readStream(path: String, range: Range<Int64>) async throws -> AsyncThrowingStream<Data, Error> {
+    /// Reads "share/path/file.ext" sequentially from `offset`, opening the remote file once, handing each chunk
+    /// (AMSMB2's max read size, typically 1–8MB) to `onChunk` **synchronously on AMSMB2's worker thread**. Reading
+    /// stops as soon as `onChunk` returns `false`, so the caller controls both backpressure (block inside `onChunk`
+    /// until the chunk has been delivered) and cancellation (return `false` once the HTTP client went away).
+    ///
+    /// Deliberately NOT AMSMB2's `contents(atPath:range:) -> AsyncThrowingStream` (used up to v0.8): that one
+    /// buffers without bound and never checks whether anyone is still listening, so every HTTP request VLC or
+    /// AVFoundation abandoned (they drop the connection on every seek/probe) kept reading the *entire rest of the
+    /// file* over SMB in the background — and with the v0.7 read gate held for that whole zombie read, the
+    /// player's next request waited behind it forever. That was the real reason SMB videos never started.
+    func streamContents(path: String, from offset: Int64, onChunk: @Sendable @escaping (Data) -> Bool) async throws {
         let (share, relative) = Self.split(path)
         let manager = try await managerFor(share: share)
-        return manager.contents(atPath: "/" + relative, range: range)
+        do {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                manager.contents(
+                    atPath: "/" + relative, offset: offset,
+                    fetchedData: { _, _, data in onChunk(data) },
+                    completionHandler: { error in
+                        if let error { cont.resume(throwing: error) } else { cont.resume() }
+                    }
+                )
+            }
+        } catch {
+            throw SmbError(message: Self.friendlyMessage(error))
+        }
     }
 
     private static func int64(_ value: Any?) -> Int64 {
@@ -188,6 +231,15 @@ actor SmbRegistry {
     private var connections: [String: SmbConnection] = [:]
 
     func get(_ host: String) -> SmbConnection? { connections[host.lowercased()] }
+
+    /// The live connection for `host`, or a fresh one from the saved login — so a video opened from Playlist or
+    /// Yêu thích still plays when the user has not browsed to that server yet since launching the app.
+    func getOrReconnect(_ host: String) async -> SmbConnection? {
+        if let existing = get(host) { return existing }
+        guard let profile = SmbServerStore.load().first(where: { $0.host.lowercased() == host.lowercased() }) else { return nil }
+        return try? await connect(host: profile.host, username: profile.username,
+                                  password: SmbServerStore.password(for: profile.host), domain: profile.domain)
+    }
 
     func connect(host: String, username: String, password: String, domain: String) async throws -> SmbConnection {
         let conn = SmbConnection(host: host, username: username, password: password, domain: domain)

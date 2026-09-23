@@ -1,53 +1,134 @@
 import Foundation
 import Network
+import UniformTypeIdentifiers
 
-/// Loopback HTTP server that streams an SMB file (with Range support), so VLCKit can play it as an ordinary HTTP URL
-/// instead of depending on whatever SMB support is (or is not) built into its own network stack. Mirrors the same idea
-/// used in the Android and Windows versions of this app.
+/// Loopback HTTP server that streams an SMB file (with Range support), so VLCKit (and AVFoundation, for thumbnails)
+/// can play it as an ordinary HTTP URL instead of depending on whatever SMB support is (or is not) built into its own
+/// network stack. Mirrors the same idea used in the Android and Windows versions of this app.
+///
+/// Each HTTP request is served by its own sequential SMB read that stops the moment the client disconnects (players
+/// drop and reopen connections on every seek) and only reads the next chunk once the previous one was handed to the
+/// socket — see `SmbConnection.streamContents` for what went wrong before this.
 final class SmbHttpProxy {
     static let shared = SmbHttpProxy()
 
     private var listener: NWListener?
     private var port: NWEndpoint.Port = 0
     private let queue = DispatchQueue(label: "SmbHttpProxy")
+    private let startLock = NSLock()
+
+    /// URL token → (host, path). The URL carries only an opaque token plus the file name (for the extension VLC
+    /// uses as a demuxer hint), so SMB paths with "&", "+", "#", "%" or Vietnamese characters never have to survive
+    /// a round-trip through URL encoding inside libVLC.
+    private var targets: [String: (host: String, path: String)] = [:]
+    private var tokensByKey: [String: String] = [:]
+    private let targetsLock = NSLock()
 
     private init() {}
 
-    /// Starts the server the first time it is needed; safe to call repeatedly.
+    /// Starts the server the first time it is needed (and again if iOS tore the socket down while the app was
+    /// suspended); safe to call repeatedly. Waits until the listener is actually accepting connections — handing VLC
+    /// a URL before that made its very first connect get refused.
     private func ensureStarted() throws {
+        startLock.lock()
+        defer { startLock.unlock() }
         if listener != nil { return }
         var lastError: Error?
         for candidate in UInt16(38471)...38571 {
+            guard let nwPort = NWEndpoint.Port(rawValue: candidate) else { continue }
+            let params = NWParameters.tcp
+            params.allowLocalEndpointReuse = true
+            let newListener: NWListener
             do {
-                let params = NWParameters.tcp
-                let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: candidate)!)
-                listener.newConnectionHandler = { [weak self] connection in
-                    connection.start(queue: self?.queue ?? .main)
-                    self?.handle(connection)
-                }
-                listener.start(queue: queue)
-                self.listener = listener
-                self.port = NWEndpoint.Port(rawValue: candidate)!
-                return
+                newListener = try NWListener(using: params, on: nwPort)
             } catch {
                 lastError = error
+                continue
             }
+            let ready = DispatchSemaphore(value: 0)
+            let outcome = StartOutcome()
+            newListener.stateUpdateHandler = { [weak self, weak newListener] state in
+                switch state {
+                case .ready:
+                    outcome.set(ok: true)
+                    ready.signal()
+                case .failed(let error):
+                    PlaybackDiagnostics.append("proxy: listener failed: \(error)")
+                    if !outcome.isSet {
+                        outcome.set(ok: false, error: error)
+                        ready.signal()
+                    }
+                    newListener?.cancel()
+                    self?.listenerDied(newListener)
+                case .cancelled:
+                    self?.listenerDied(newListener)
+                default:
+                    break
+                }
+            }
+            newListener.newConnectionHandler = { [weak self] connection in
+                guard let self else { connection.cancel(); return }
+                connection.start(queue: self.queue)
+                self.handle(connection)
+            }
+            newListener.start(queue: queue)
+            if ready.wait(timeout: .now() + 3) == .timedOut {
+                newListener.cancel()
+                lastError = SmbError(message: "timeout")
+                continue
+            }
+            if outcome.ok {
+                listener = newListener
+                port = nwPort
+                PlaybackDiagnostics.append("proxy: listening on 127.0.0.1:\(candidate)")
+                return
+            }
+            lastError = outcome.error
         }
         throw SmbError(message: "Không mở được cổng nội bộ để phát video SMB. \(lastError?.localizedDescription ?? "")")
+    }
+
+    /// Hopped off the proxy queue: `ensureStarted` holds `startLock` while waiting for a listener's state callback
+    /// on that queue, so taking the lock from the queue directly could deadlock.
+    private func listenerDied(_ dead: NWListener?) {
+        guard let dead else { return }
+        DispatchQueue.global().async { [weak self] in
+            guard let self else { return }
+            self.startLock.lock()
+            if self.listener === dead { self.listener = nil }
+            self.startLock.unlock()
+        }
     }
 
     /// URL to hand to VLCKit for "share/path/file.ext" on `host`.
     func url(host: String, path: String) throws -> URL {
         try ensureStarted()
+        let token = token(host: host, path: path)
         let name = (path as NSString).lastPathComponent
-        var components = URLComponents()
-        components.scheme = "http"
-        components.host = "127.0.0.1"
-        components.port = Int(port.rawValue)
-        components.path = "/\(name)"
-        components.queryItems = [URLQueryItem(name: "h", value: host), URLQueryItem(name: "p", value: path)]
-        guard let url = components.url else { throw SmbError(message: "Không tạo được URL phát video.") }
+        let ext = (name as NSString).pathExtension
+        // Keep only a safe ASCII stand-in for the name: VLC needs the extension, nothing else.
+        let safeName = ext.isEmpty ? "media" : "media.\(ext.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "bin")"
+        guard let url = URL(string: "http://127.0.0.1:\(port.rawValue)/f/\(token)/\(safeName)") else {
+            throw SmbError(message: "Không tạo được URL phát video.")
+        }
         return url
+    }
+
+    private func token(host: String, path: String) -> String {
+        targetsLock.lock()
+        defer { targetsLock.unlock() }
+        let key = host.lowercased() + "\n" + path
+        if let existing = tokensByKey[key] { return existing }
+        let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        tokensByKey[key] = token
+        targets[token] = (host, path)
+        return token
+    }
+
+    private func target(for token: String) -> (host: String, path: String)? {
+        targetsLock.lock()
+        defer { targetsLock.unlock() }
+        return targets[token]
     }
 
     // MARK: - connection handling
@@ -56,12 +137,12 @@ final class SmbHttpProxy {
         var buffer = Data()
         func receiveMore() {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, isComplete, error in
-                guard let self else { return }
+                guard let self else { connection.cancel(); return }
                 if let data, !data.isEmpty { buffer.append(data) }
                 if let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) {
                     let headerData = buffer[..<headerEnd.lowerBound]
-                    self.respond(to: headerData, on: connection)
-                } else if isComplete || error != nil {
+                    self.respond(to: Data(headerData), on: connection)
+                } else if isComplete || error != nil || buffer.count > 64 * 1024 {
                     connection.cancel()
                 } else {
                     receiveMore()
@@ -72,29 +153,41 @@ final class SmbHttpProxy {
     }
 
     private func respond(to headerData: Data, on connection: NWConnection) {
-        let text = String(data: headerData, encoding: .utf8) ?? ""
+        let text = String(decoding: headerData, as: UTF8.self)
         let lines = text.components(separatedBy: "\r\n")
         guard let requestLine = lines.first else { close(connection, status: 400); return }
         let parts = requestLine.split(separator: " ")
         guard parts.count >= 2 else { close(connection, status: 400); return }
-        let method = String(parts[0])
+        let method = String(parts[0]).uppercased()
         let target = String(parts[1])
 
         var rangeHeader: String?
-        for line in lines.dropFirst() {
-            if line.lowercased().hasPrefix("range:") {
-                rangeHeader = line.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces)
-            }
+        for line in lines.dropFirst() where line.lowercased().hasPrefix("range:") {
+            rangeHeader = line.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces)
         }
 
-        guard let query = target.split(separator: "?", maxSplits: 1).last else { close(connection, status: 400); return }
-        let params = Self.parseQuery(String(query))
-        guard let host = params["h"], let path = params["p"] else { close(connection, status: 404); return }
+        // "/f/<token>/<name>"
+        let segments = target.split(separator: "?", maxSplits: 1)[0].split(separator: "/")
+        guard segments.count >= 2, segments[0] == "f", let resolved = self.target(for: String(segments[1])) else {
+            PlaybackDiagnostics.append("proxy: unknown target \(target) — 404")
+            close(connection, status: 404)
+            return
+        }
+        let host = resolved.host
+        let path = resolved.path
 
         PlaybackDiagnostics.append("proxy: \(method) \(path) range=\(rangeHeader ?? "-")")
 
+        let state = ClientState()
+        connection.stateUpdateHandler = { newState in
+            switch newState {
+            case .failed, .cancelled: state.markGone()
+            default: break
+            }
+        }
+
         Task {
-            guard let smb = await SmbRegistry.shared.get(host) else {
+            guard let smb = await SmbRegistry.shared.getOrReconnect(host) else {
                 PlaybackDiagnostics.append("proxy: no SMB connection for host \(host) — 404")
                 close(connection, status: 404)
                 return
@@ -116,17 +209,27 @@ final class SmbHttpProxy {
                 let spec = String(rangeHeader[match]).replacingOccurrences(of: "bytes=", with: "")
                 let bounds = spec.split(separator: "-", omittingEmptySubsequences: false)
                 if bounds.count == 2 {
-                    if !bounds[0].isEmpty { start = Int64(bounds[0]) ?? 0 }
-                    if !bounds[1].isEmpty { end = Int64(bounds[1]) ?? end }
-                    else if bounds[0].isEmpty, let suffix = Int64(bounds[1]) { start = max(0, length - suffix) }
+                    if bounds[0].isEmpty, let suffix = Int64(bounds[1]) {
+                        start = max(0, length - suffix)
+                    } else {
+                        start = Int64(bounds[0]) ?? 0
+                        if !bounds[1].isEmpty { end = Int64(bounds[1]) ?? end }
+                    }
                     partial = true
                 }
             }
             end = min(end, length - 1)
+
+            if partial && (start >= length || start > end) {
+                let head = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */\(length)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in connection.cancel() })
+                PlaybackDiagnostics.append("proxy: 416 for range \(rangeHeader ?? "") (length \(length))")
+                return
+            }
             let contentLength = max(0, end - start + 1)
 
             var head = "HTTP/1.1 \(partial ? "206 Partial Content" : "200 OK")\r\n"
-            head += "Content-Type: application/octet-stream\r\n"
+            head += "Content-Type: \(Self.mimeType(for: path))\r\n"
             head += "Accept-Ranges: bytes\r\n"
             head += "Content-Length: \(contentLength)\r\n"
             if partial { head += "Content-Range: bytes \(start)-\(end)/\(length)\r\n" }
@@ -134,47 +237,90 @@ final class SmbHttpProxy {
             connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
             PlaybackDiagnostics.append("proxy: \(partial ? "206" : "200") length=\(length) contentLength=\(contentLength) [\(start)-\(end)]")
 
-            if method == "HEAD" || contentLength == 0 { close(connection, status: nil); return }
+            if method == "HEAD" || contentLength == 0 { self.finish(connection); return }
 
-            // Held for the whole streamed read, not just the call that starts it — a thumbnail fetch (or another
-            // player request) must wait its turn instead of racing this one for the connection's SMB2 credits.
-            await smb.acquireReadSlot()
-            var sentBytes: Int64 = 0
+            let remaining = Counter(contentLength)
+            let sent = Counter(0)
             do {
-                let stream = try await smb.readStream(path: path, range: start..<(end + 1))
-                for try await chunk in stream where !chunk.isEmpty {
-                    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                        connection.send(content: chunk, completion: .contentProcessed { _ in cont.resume() })
+                try await smb.streamContents(path: path, from: start) { chunk in
+                    // Runs synchronously on AMSMB2's worker thread: blocking here until the socket took the chunk is
+                    // the backpressure, and returning false is how the read stops.
+                    if state.isGone || chunk.isEmpty { return false }
+                    let slice = chunk.count > remaining.value ? chunk.prefix(Int(remaining.value)) : chunk
+                    let delivered = DispatchSemaphore(value: 0)
+                    let ok = Counter(1)
+                    connection.send(content: slice, completion: .contentProcessed { error in
+                        if error != nil { ok.value = 0; state.markGone() }
+                        delivered.signal()
+                    })
+                    if delivered.wait(timeout: .now() + 60) == .timedOut {
+                        state.markGone()
+                        return false
                     }
-                    sentBytes += Int64(chunk.count)
+                    guard ok.value == 1 else { return false }
+                    remaining.value -= Int64(slice.count)
+                    sent.value += Int64(slice.count)
+                    return remaining.value > 0 && !state.isGone
                 }
-                PlaybackDiagnostics.append("proxy: stream finished, sent \(sentBytes)/\(contentLength) bytes")
+                PlaybackDiagnostics.append("proxy: done, sent \(sent.value)/\(contentLength) bytes\(state.isGone ? " (client closed)" : "")")
             } catch {
-                // Streaming failed partway through (server dropped, seek elsewhere) — headers are already sent, so
-                // there is nothing left to do but stop; the player will surface this as a playback error.
-                PlaybackDiagnostics.append("proxy: stream error after \(sentBytes)/\(contentLength) bytes: \(error.localizedDescription)")
+                PlaybackDiagnostics.append("proxy: SMB read error after \(sent.value)/\(contentLength) bytes: \(error.localizedDescription)")
             }
-            await smb.releaseReadSlot()
-            close(connection, status: nil)
+            self.finish(connection)
         }
     }
 
-    private func close(_ connection: NWConnection, status: Int?) {
-        if let status {
-            let head = "HTTP/1.1 \(status) Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in connection.cancel() })
-        } else {
+    /// Ends the response once everything queued has been flushed.
+    private func finish(_ connection: NWConnection) {
+        connection.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in
             connection.cancel()
-        }
+        })
     }
 
-    private static func parseQuery(_ query: String) -> [String: String] {
-        var result: [String: String] = [:]
-        for part in query.split(separator: "&") {
-            let kv = part.split(separator: "=", maxSplits: 1)
-            guard kv.count == 2 else { continue }
-            result[String(kv[0]).removingPercentEncoding ?? String(kv[0])] = String(kv[1]).removingPercentEncoding ?? String(kv[1])
-        }
-        return result
+    private func close(_ connection: NWConnection, status: Int) {
+        let head = "HTTP/1.1 \(status) Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in connection.cancel() })
     }
+
+    /// A real media type — AVFoundation (thumbnails) refuses an HTTP resource served as application/octet-stream.
+    private static func mimeType(for path: String) -> String {
+        let ext = (path as NSString).pathExtension.lowercased()
+        switch ext {
+        case "mkv": return "video/x-matroska"
+        case "mka": return "audio/x-matroska"
+        case "ts", "m2ts", "mts": return "video/mp2t"
+        default:
+            return UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream"
+        }
+    }
+}
+
+// Small thread-safe boxes shared between the proxy queue and AMSMB2's worker thread.
+
+private final class ClientState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var gone = false
+    var isGone: Bool { lock.lock(); defer { lock.unlock() }; return gone }
+    func markGone() { lock.lock(); gone = true; lock.unlock() }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Int64
+    init(_ value: Int64) { _value = value }
+    var value: Int64 {
+        get { lock.lock(); defer { lock.unlock() }; return _value }
+        set { lock.lock(); _value = newValue; lock.unlock() }
+    }
+}
+
+private final class StartOutcome: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _set = false
+    private var _ok = false
+    private var _error: Error?
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return _set }
+    var ok: Bool { lock.lock(); defer { lock.unlock() }; return _ok }
+    var error: Error? { lock.lock(); defer { lock.unlock() }; return _error }
+    func set(ok: Bool, error: Error? = nil) { lock.lock(); _set = true; _ok = ok; _error = error; lock.unlock() }
 }

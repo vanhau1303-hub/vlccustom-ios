@@ -14,6 +14,11 @@ enum PlaybackDiagnostics {
 
     /// Call once at app launch.
     static func start() {
+        // Keep the file shareable: start over once it passes ~20MB (libVLC debug output is verbose).
+        if let size = (try? FileManager.default.attributesOfItem(atPath: logURL.path))?[.size] as? NSNumber,
+           size.int64Value > 20_000_000 {
+            try? FileManager.default.removeItem(at: logURL)
+        }
         if !FileManager.default.fileExists(atPath: logURL.path) {
             FileManager.default.createFile(atPath: logURL.path, contents: nil)
         }
@@ -30,13 +35,18 @@ enum PlaybackDiagnostics {
     }
 
     /// Appends one of our own (non-libVLC) lines — SMB proxy request/response, player URL resolution, etc.
+    /// Called from the proxy queue, AMSMB2 threads and the main thread alike — serialized so lines never interleave.
     static func append(_ line: String) {
         let text = "[app] \(line)\n"
         guard let data = text.data(using: .utf8) else { return }
-        if let handle = try? FileHandle(forWritingTo: logURL) {
-            defer { handle.closeFile() }
-            handle.seekToEndOfFile()
-            handle.write(data)
+        writeQueue.async {
+            if let handle = try? FileHandle(forWritingTo: logURL) {
+                defer { handle.closeFile() }
+                handle.seekToEndOfFile()
+                handle.write(data)
+            }
         }
     }
+
+    private static let writeQueue = DispatchQueue(label: "PlaybackDiagnostics")
 }
