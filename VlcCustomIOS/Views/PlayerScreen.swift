@@ -652,6 +652,8 @@ struct PictureControlsSheet: View {
 /// finger lifts). A 36pt-tall touch area around a thin track, so it is easy to hit.
 struct SeekBar: View {
     let progress: Double
+    var tint: Color = .white
+    var track: Color = .white.opacity(0.3)
     let onScrub: (Double) -> Void
     let onCommit: (Double) -> Void
     @State private var dragging = false
@@ -661,9 +663,9 @@ struct SeekBar: View {
             let width = max(geo.size.width, 1)
             let x = CGFloat(min(max(progress, 0), 1)) * width
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.3)).frame(height: dragging ? 6 : 4)
-                Capsule().fill(Color.white).frame(width: x, height: dragging ? 6 : 4)
-                Circle().fill(Color.white)
+                Capsule().fill(track).frame(height: dragging ? 6 : 4)
+                Capsule().fill(tint).frame(width: x, height: dragging ? 6 : 4)
+                Circle().fill(tint)
                     .frame(width: dragging ? 20 : 14, height: dragging ? 20 : 14)
                     .offset(x: x - (dragging ? 10 : 7))
             }

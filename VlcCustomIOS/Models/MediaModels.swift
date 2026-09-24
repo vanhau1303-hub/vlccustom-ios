@@ -56,6 +56,8 @@ struct FavoriteFolder: Identifiable, Codable, Hashable {
 extension SmbEntry {
     private static let audioExtensions: Set<String> = [
         "mp3", "flac", "wav", "aac", "m4a", "m4b", "ogg", "oga", "opus", "wma", "ape", "alac", "aiff", "aif", "mka",
+        // Also played as music: DVD .vob (karaoke discs), DSD, Dolby/DTS, Musepack, WavPack, TTA, TAK, AMR...
+        "vob", "dsf", "dff", "ac3", "dts", "mpc", "wv", "tta", "tak", "amr", "caf", "m4r", "mp2", "mpa", "spx", "au",
     ]
     private static let imageExtensions: Set<String> = [
         "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "tif", "tiff",

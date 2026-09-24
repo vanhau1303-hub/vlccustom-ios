@@ -1,6 +1,7 @@
 import Foundation
 import MobileVLCKit
 import MediaPlayer
+import UIKit
 import AVFoundation
 
 /// The list of songs currently being played and where we are in it — the music equivalent of `PlaybackQueue`,
@@ -64,6 +65,8 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     @Published var duration: Int32 = 0
     @Published var didReachEnd = false
     @Published var showError = false
+    /// Cover art of the current song (embedded in the file, extracted by libVLC), nil until found / if none.
+    @Published var artwork: UIImage?
 
     var progress: Double { duration > 0 ? Double(time) / Double(duration) : 0 }
 
@@ -90,9 +93,18 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     private func start(_ item: AudioItem) {
         playGeneration += 1
         let generation = playGeneration
+        artwork = nil
+        Task { @MainActor in
+            let cover = await ThumbnailService.shared.audioCover(source: item.source)
+            guard generation == self.playGeneration else { return }
+            self.artwork = cover
+            self.updateNowPlaying()
+        }
         guard let (host, path) = SmbUri.parse(item.source) else {
             guard let local = URL(string: item.source) else { return }
-            mediaPlayer.media = VLCMedia(url: local)
+            let media = VLCMedia(url: local)
+            media.addOption(":no-video")
+            mediaPlayer.media = media
             mediaPlayer.play()
             updateNowPlaying()
             return
@@ -105,6 +117,8 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
                 self.showError = true
                 return
             }
+            // Audio only, even for a .vob/.mkv with a picture track: there is no video surface here.
+            media.addOption(":no-video")
             self.mediaPlayer.media = media
             self.mediaPlayer.play()
             self.updateNowPlaying()
@@ -155,6 +169,9 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         info[MPMediaItemPropertyPlaybackDuration] = Double(duration) / 1000
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = Double(time) / 1000
         info[MPNowPlayingInfoPropertyPlaybackRate] = mediaPlayer.isPlaying ? 1.0 : 0.0
+        if let artwork {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
+        }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 

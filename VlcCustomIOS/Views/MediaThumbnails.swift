@@ -129,3 +129,30 @@ struct FolderGridCell: View {
         .frame(width: cellWidth, alignment: .leading)
     }
 }
+
+/// A song's cover art (see `ThumbnailService.audioCover`), or a music-note box when it has none.
+struct AudioCoverView: View {
+    let source: String
+    let size: CGFloat
+    var width: CGFloat?
+    @State private var cover: UIImage?
+    @ObservedObject private var activity = PlaybackActivity.shared
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
+            if let cover {
+                Image(uiImage: cover).resizable().scaledToFill()
+            } else {
+                Image(systemName: "music.note").font(.system(size: size * 0.4)).foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: width ?? size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .task(id: source) {
+            cover = await ThumbnailService.shared.cachedThumbnail(source: source)
+            guard cover == nil, !activity.isBusy else { return }
+            cover = await ThumbnailService.shared.audioCover(source: source)
+        }
+    }
+}

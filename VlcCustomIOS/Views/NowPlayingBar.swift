@@ -10,7 +10,12 @@ struct NowPlayingBar: View {
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 12) {
-                Image(systemName: "music.note").font(.title3).foregroundStyle(.secondary)
+                if let artwork = player.artwork {
+                    Image(uiImage: artwork).resizable().scaledToFill()
+                        .frame(width: 36, height: 36).clipShape(RoundedRectangle(cornerRadius: 6))
+                } else {
+                    Image(systemName: "music.note").font(.title3).foregroundStyle(.secondary).frame(width: 36, height: 36)
+                }
                 Text(queue.current?.title ?? "").font(.subheadline).lineLimit(1)
                 Spacer()
                 Button { player.togglePlayPause() } label: {

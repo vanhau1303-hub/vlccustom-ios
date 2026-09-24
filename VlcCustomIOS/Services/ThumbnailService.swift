@@ -126,6 +126,48 @@ actor ThumbnailService {
         return await imageThumbnail(source: source, data: data)
     }
 
+    /// Cover art embedded in a song (ID3/FLAC/MP4 tags...), read by libVLC's own parser — over its SMB2 module for
+    /// network files. Songs without a cover get a marker file so they are not parsed again every time.
+    func audioCover(source: String) async -> UIImage? {
+        if let cached = cachedThumbnail(source: source) { return cached }
+        let key = cacheKey(source)
+        let noCover = diskDirectory.appendingPathComponent(key + ".none")
+        if FileManager.default.fileExists(atPath: noCover.path) { return nil }
+
+        await acquireSmbSlot()
+        defer { releaseSmbSlot() }
+        if Task.isCancelled { return nil }
+        if let cached = cachedThumbnail(source: source) { return cached }
+
+        let media: VLCMedia?
+        if let (host, path) = SmbUri.parse(source) {
+            let login = await SmbRegistry.shared.login(for: host)
+            media = await MainActor.run { SmbPlayback.media(host: host, path: path, route: .direct, login: login) }
+        } else {
+            media = URL(string: source).map { VLCMedia(url: $0) }
+        }
+        guard let media, let art = await Self.parseArtwork(media),
+              let data = art.jpegData(compressionQuality: 0.9), let cover = Self.downsample(data, maxDimension: 640) else {
+            FileManager.default.createFile(atPath: noCover.path, contents: nil)
+            return nil
+        }
+        remember(cover, key: key)
+        saveToDisk(cover, key: key)
+        return cover
+    }
+
+    @MainActor
+    private static func parseArtwork(_ media: VLCMedia) async -> UIImage? {
+        // parseNetwork | fetchLocal: read the file's own tags even though it is on the network; no online lookups.
+        let options = VLCMediaParsingOptions(rawValue: 0x01 | 0x02)
+        _ = media.parse(options: options, timeout: 15_000)
+        let deadline = Date().addingTimeInterval(17)
+        while media.parsedStatus.rawValue == 0, Date() < deadline { // 0 = still parsing ("init")
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return media.metaData.artwork
+    }
+
     private var smbActive = 0
     private var smbWaiters: [CheckedContinuation<Void, Never>] = []
     private static let maxSmbJobs = 1

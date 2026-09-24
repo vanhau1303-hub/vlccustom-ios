@@ -13,12 +13,20 @@ struct MusicPlayerScreen: View {
         NavigationStack {
             VStack(spacing: 24) {
                 Spacer()
-                Image(systemName: "music.note")
-                    .font(.system(size: 96))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 220, height: 220)
-                    .background(Color.secondary.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                Group {
+                    if let artwork = player.artwork {
+                        Image(uiImage: artwork).resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "music.note")
+                            .font(.system(size: 96))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color.secondary.opacity(0.1))
+                    }
+                }
+                .frame(width: 280, height: 280)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
 
                 VStack(spacing: 4) {
                     Text(queue.current?.title ?? "").font(.title3.bold()).multilineTextAlignment(.center)
@@ -29,11 +37,18 @@ struct MusicPlayerScreen: View {
                 .padding(.horizontal)
 
                 VStack(spacing: 4) {
-                    Slider(value: seeking ? $sliderValue : .constant(player.progress), in: 0...1, onEditingChanged: { editing in
-                        seeking = editing
-                        if !editing { player.seek(to: sliderValue) }
-                    })
-                    .onChange(of: player.progress) { new in if !seeking { sliderValue = new } }
+                    // Tap anywhere on the bar to jump there, or drag to scrub.
+                    SeekBar(progress: seeking ? sliderValue : player.progress,
+                            tint: .accentColor, track: Color.secondary.opacity(0.3),
+                            onScrub: { fraction in
+                                seeking = true
+                                sliderValue = fraction
+                            },
+                            onCommit: { fraction in
+                                sliderValue = fraction
+                                player.seek(to: fraction)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { seeking = false }
+                            })
                     HStack {
                         Text(format(player.time)).font(.caption).monospacedDigit()
                         Spacer()

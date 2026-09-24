@@ -65,7 +65,7 @@ struct SmbEntryThumbnail: View {
         case .folder: FolderThumbnailView(size: size)
         case .video: VideoThumbnailView(source: "smb://\(host)/\(entry.path)", size: size)
         case .image: SmbImageThumbnailView(host: host, path: entry.path, width: size * 16 / 9, height: size)
-        case .audio: MusicThumbnailView(size: size)
+        case .audio: AudioCoverView(source: "smb://\(host)/\(entry.path)", size: size)
         case .other:
             ZStack {
                 RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.1))
@@ -159,8 +159,7 @@ struct SmbFolderContent: View {
             case .folder: FolderThumbnailView(size: height, width: width)
             case .video: VideoThumbnailView(source: "smb://\(host)/\(entry.path)", size: height)
             case .image: SmbImageThumbnailView(host: host, path: entry.path, width: width, height: height)
-            case .audio:
-                MusicThumbnailView(size: height).frame(width: width).background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15)))
+            case .audio: AudioCoverView(source: "smb://\(host)/\(entry.path)", size: height, width: width)
             case .other: SmbEntryThumbnail(entry: entry, host: host, size: height).frame(width: width)
             }
             Text(entry.name).font(.footnote).lineLimit(2).multilineTextAlignment(.leading)

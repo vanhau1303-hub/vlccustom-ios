@@ -79,7 +79,6 @@ private enum LibraryScreen: String, Identifiable, CaseIterable {
 
 struct SettingsView: View {
     @State private var library: LibraryScreen?
-    @State private var thumbnailBytes: Int64 = 0
 
     var body: some View {
         NavigationStack {
@@ -97,21 +96,6 @@ struct SettingsView: View {
                          "tốc độ phát, chọn track âm thanh/phụ đề, chỉnh màu, khử sọc, tỉ lệ khung hình, phụ đề AI (nhận dạng " +
                          "giọng nói ngay trên máy) và dịch tự động sang ngôn ngữ khác.")
                         .font(.subheadline).foregroundStyle(.secondary)
-                }
-                Section {
-                    HStack {
-                        Label("Thumbnail đã lưu", systemImage: "photo.stack")
-                        Spacer()
-                        Text(ByteCountFormatter.string(fromByteCount: thumbnailBytes, countStyle: .file)).foregroundStyle(.secondary)
-                    }
-                    Button("Xoá thumbnail", role: .destructive) {
-                        Task {
-                            await ThumbnailService.shared.clearAll()
-                            thumbnailBytes = ThumbnailService.diskUsage()
-                        }
-                    }
-                } footer: {
-                    Text("Thumbnail được lưu trong bộ nhớ của ứng dụng, mở lại thư mục là hiện ngay, không phải tạo lại qua mạng.")
                 }
                 Section("Chưa có (dự kiến làm dần)") {
                     Text("Khoá ứng dụng.")
@@ -135,7 +119,6 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("VLCcustom cho iOS")
-            .task { thumbnailBytes = ThumbnailService.diskUsage() }
             .sheet(item: $library) { screen in
                 switch screen {
                 case .video: LocalLibraryView()
