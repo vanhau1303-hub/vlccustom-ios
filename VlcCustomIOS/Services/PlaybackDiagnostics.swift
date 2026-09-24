@@ -11,40 +11,41 @@ enum PlaybackDiagnostics {
     }()
 
     private static var fileLogger: VLCFileLogger?
+    /// One O_APPEND descriptor shared by libVLC's logger and our own lines. Two separately-seeked handles (as before)
+    /// overwrote each other's lines, which is why app lines went missing from shared logs.
+    private static var handle: FileHandle?
 
     /// Call once at app launch.
     static func start() {
-        // Keep the file shareable: start over once it passes ~20MB (libVLC debug output is verbose).
+        // Keep the file shareable: start over once it passes ~20MB.
         if let size = (try? FileManager.default.attributesOfItem(atPath: logURL.path))?[.size] as? NSNumber,
            size.int64Value > 20_000_000 {
             try? FileManager.default.removeItem(at: logURL)
         }
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        }
-        guard let handle = try? FileHandle(forWritingTo: logURL) else { return }
-        handle.seekToEndOfFile()
+        let fd = open(logURL.path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+        guard fd >= 0 else { return }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        self.handle = handle
         let logger = VLCFileLogger(fileHandle: handle)
-        logger.level = .debug
+        // Info, not debug: libVLC's debug output is thousands of lines per minute of playback, and writing all of it
+        // to disk on the decoding threads costs smoothness. Errors/warnings (codec, network) are still all there.
+        logger.level = .info
         VLCLibrary.shared().loggers = [logger]
         fileLogger = logger
     }
 
     static func clear() {
-        try? "".write(to: logURL, atomically: true, encoding: .utf8)
+        writeQueue.async {
+            if let handle { try? handle.truncate(atOffset: 0) }
+        }
     }
 
-    /// Appends one of our own (non-libVLC) lines — SMB proxy request/response, player URL resolution, etc.
-    /// Called from the proxy queue, AMSMB2 threads and the main thread alike — serialized so lines never interleave.
+    /// Appends one of our own (non-libVLC) lines — player route, SMB errors, etc. Serialized so lines never interleave.
     static func append(_ line: String) {
         let text = "[app] \(line)\n"
         guard let data = text.data(using: .utf8) else { return }
         writeQueue.async {
-            if let handle = try? FileHandle(forWritingTo: logURL) {
-                defer { handle.closeFile() }
-                handle.seekToEndOfFile()
-                handle.write(data)
-            }
+            handle?.write(data)
         }
     }
 

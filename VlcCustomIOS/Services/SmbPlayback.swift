@@ -49,7 +49,7 @@ enum SmbPlayback {
             PlaybackDiagnostics.append("smb: proxy \(url.absoluteString)")
         }
         // A bit more buffer than VLC's 1s default: Wi-Fi to a home PC jitters.
-        media.addOption(":network-caching=1500")
+        media.addOption(":network-caching=2000")
         return media
     }
 }

@@ -102,11 +102,15 @@ final class LiveSubtitles: ObservableObject {
     }
 
     private func run(source: String, durationMs: Int, modelSize: String, language: String?, translateTo: String?, dual: Bool) async {
-        guard let url = resolveURL(source: source) else {
+        let smb = SmbUri.parse(source)
+        let localURL = smb == nil ? URL(string: source) : nil
+        if smb == nil && localURL == nil {
             errorMessage = "Không mở được file để nhận dạng."
             running = false
             return
         }
+        var login: SmbPlayback.Login?
+        if let smb { login = await SmbRegistry.shared.login(for: smb.host) }
         guard durationMs > 0 else {
             errorMessage = "Chưa biết thời lượng video."
             running = false
@@ -129,7 +133,15 @@ final class LiveSubtitles: ObservableObject {
             status = "Đang nhận dạng giọng nói… (\(cursor / 1000)s / \(durationMs / 1000)s)"
             let length = min(Self.windowMs, durationMs - cursor)
             do {
-                let samples = try await AudioPcmExtractor.extract(url: url, startMs: cursor, durationMs: length)
+                // SMB: libVLC transcodes the window itself (any format, over its own SMB2 module). Local files keep
+                // AVAssetReader, which reads them directly.
+                let samples: [Float]
+                if let smb {
+                    samples = try await VlcAudioExtractor.extract(host: smb.host, path: smb.path, login: login,
+                                                                  startMs: cursor, durationMs: length)
+                } else {
+                    samples = try await AudioPcmExtractor.extract(url: localURL!, startMs: cursor, durationMs: length)
+                }
                 guard !samples.isEmpty else {
                     coverage.mark(cursor, cursor + length)
                     persist()
@@ -187,13 +199,6 @@ final class LiveSubtitles: ObservableObject {
         guard let subtitleURL, let coverageURL else { return }
         Srt.write(cues, to: subtitleURL)
         try? coverage.serialized().write(to: coverageURL, atomically: true, encoding: .utf8)
-    }
-
-    private func resolveURL(source: String) -> URL? {
-        if let (host, path) = SmbUri.parse(source) {
-            return try? SmbHttpProxy.shared.url(host: host, path: path)
-        }
-        return URL(string: source)
     }
 
     private func rms(_ samples: [Float]) -> Float {

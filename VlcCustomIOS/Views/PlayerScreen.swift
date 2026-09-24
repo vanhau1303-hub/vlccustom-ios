@@ -25,6 +25,7 @@ struct PlayerScreen: View {
     @State private var dragBaseValue: Double = 0
     @State private var seekPreviewMs: Int?
     @State private var gestureHint: String?
+    @State private var controlsHideToken = 0
 
     private static let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
@@ -37,7 +38,10 @@ struct PlayerScreen: View {
                 .gesture(
                     SpatialTapGesture(count: 2)
                         .onEnded { value in handleDoubleTap(at: value.location, size: geo.size) }
-                        .exclusively(before: SpatialTapGesture(count: 1).onEnded { _ in withAnimation { showControls.toggle() } })
+                        .exclusively(before: SpatialTapGesture(count: 1).onEnded { _ in
+                            withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() }
+                            if showControls { keepControlsVisible() }
+                        })
                 )
                 .simultaneousGesture(playerDragGesture(in: geo.size))
 
@@ -82,55 +86,76 @@ struct PlayerScreen: View {
             }
 
             if showControls {
-                VStack {
-                    HStack {
-                        Button { close() } label: { Image(systemName: "xmark.circle.fill").font(.title2) }
-                        Spacer()
-                        Button { cycleSpeed() } label: { Text(speedLabel).font(.footnote.monospacedDigit()) }
-                            .buttonStyle(.bordered).tint(.white)
-                        Button { player.cycleAspectRatio() } label: { Image(systemName: "aspectratio") }
-                        Button { player.toggleDeinterlace() } label: {
-                            Image(systemName: player.deinterlaceOn ? "tv.fill" : "tv")
+                VStack(spacing: 0) {
+                    // Top bar: close + title on the left, the most used actions as roomy 44pt round buttons on the
+                    // right, and the rarer ones (aspect, deinterlace, picture) tucked into a "more" menu so nothing is
+                    // cramped even in portrait.
+                    HStack(spacing: 10) {
+                        controlButton("xmark") { close() }
+                        Text(queue.current?.name ?? "")
+                            .font(.subheadline.weight(.medium)).foregroundStyle(.white).lineLimit(1)
+                        Spacer(minLength: 8)
+                        Button { cycleSpeed(); keepControlsVisible() } label: {
+                            Text(speedLabel).font(.subheadline.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 44, height: 44)
+                                .background(Circle().fill(Color.black.opacity(0.35)))
                         }
-                        Button { showTrackPicker = true } label: { Image(systemName: "captions.bubble") }
-                        Button { showPictureControls = true } label: { Image(systemName: "slider.horizontal.3") }
-                        Button { showSpeechDialog = true } label: { Image(systemName: "waveform") }
+                        controlButton("rotate.right") { toggleOrientation(landscapeNow: geo.size.width > geo.size.height) }
+                        controlButton("captions.bubble") { showTrackPicker = true }
+                        controlButton("waveform") { showSpeechDialog = true }
+                        Menu {
+                            Button { player.cycleAspectRatio() } label: { Label("Tỉ lệ khung hình", systemImage: "aspectratio") }
+                            Button { player.toggleDeinterlace() } label: {
+                                Label(player.deinterlaceOn ? "Tắt khử sọc" : "Bật khử sọc", systemImage: "tv")
+                            }
+                            Button { showPictureControls = true } label: { Label("Chỉnh màu", systemImage: "slider.horizontal.3") }
+                        } label: {
+                            controlIcon("ellipsis")
+                        }
                     }
-                    .padding()
-                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                    .padding(.bottom, 16)
+                    .background(LinearGradient(colors: [.black.opacity(0.7), .clear], startPoint: .top, endPoint: .bottom))
 
                     Spacer()
 
-                    VStack(spacing: 8) {
-                        Text(queue.current?.name ?? "").foregroundStyle(.white).font(.footnote).lineLimit(1)
-                        HStack {
+                    VStack(spacing: 14) {
+                        HStack(spacing: 10) {
                             Text(format(player.time)).foregroundStyle(.white).font(.caption).monospacedDigit()
                             Slider(value: seeking ? $sliderValue : .constant(player.progress), in: 0...1, onEditingChanged: { editing in
                                 seeking = editing
-                                if !editing { player.seek(to: sliderValue) }
+                                if editing { keepControlsVisible() } else { player.seek(to: sliderValue) }
                             })
+                            .tint(.white)
                             .onChange(of: player.progress) { new in if !seeking { sliderValue = new } }
                             Text(format(player.duration)).foregroundStyle(.white).font(.caption).monospacedDigit()
                         }
-                        HStack(spacing: 32) {
-                            Button { queue.movePrevious(); player.playCurrent() } label: { Image(systemName: "backward.end.fill") }
-                                .disabled(!queue.hasPrevious)
-                            Button { player.togglePlayPause() } label: {
-                                Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 44))
-                            }
-                            Button { playNextOrClose() } label: { Image(systemName: "forward.end.fill") }
-                                .disabled(!queue.hasNext)
+                        HStack(spacing: 36) {
+                            transportButton("backward.end.fill", size: 22) { queue.movePrevious(); player.playCurrent() }
+                                .disabled(!queue.hasPrevious).opacity(queue.hasPrevious ? 1 : 0.35)
+                            transportButton("gobackward.10", size: 26) { player.skip(ms: -10_000) }
+                            transportButton(player.isPlaying ? "pause.circle.fill" : "play.circle.fill", size: 54) { player.togglePlayPause() }
+                            transportButton("goforward.10", size: 26) { player.skip(ms: 10_000) }
+                            transportButton("forward.end.fill", size: 22) { playNextOrClose() }
+                                .disabled(!queue.hasNext).opacity(queue.hasNext ? 1 : 0.35)
                         }
-                        .foregroundStyle(.white)
                     }
-                    .padding()
-                    .background(.black.opacity(0.6))
+                    .padding(.horizontal, 16)
+                    .padding(.top, 24)
+                    .padding(.bottom, 12)
+                    .background(LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom))
                 }
+                .transition(.opacity)
             }
         }
         .statusBarHidden()
-        .onAppear { player.playCurrent(); PlaybackActivity.shared.isBusy = true }
-        .onDisappear { player.stop(); live.stop(); PlaybackActivity.shared.isBusy = false }
+        .onAppear { player.playCurrent(); PlaybackActivity.shared.isBusy = true; keepControlsVisible() }
+        .onDisappear {
+            player.stop(); live.stop(); PlaybackActivity.shared.isBusy = false
+            OrientationLock.unlock()
+        }
         .onChange(of: player.didReachEnd) { reached in if reached { playNextOrClose() } }
         .alert("Không phát được video", isPresented: $player.showError) {
             Button("Đóng", role: .cancel) {}
@@ -147,6 +172,49 @@ struct PlayerScreen: View {
             SpeechSubtitleDialog(live: live, videoName: queue.current?.name ?? "", durationMs: Int(player.duration), source: queue.current?.source ?? "")
         }
         }
+    }
+
+    // MARK: - Controls
+
+    private func controlIcon(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 44, height: 44)
+            .background(Circle().fill(Color.black.opacity(0.35)))
+            .contentShape(Circle())
+    }
+
+    private func controlButton(_ systemName: String, action: @escaping () -> Void) -> some View {
+        Button { action(); keepControlsVisible() } label: { controlIcon(systemName) }
+    }
+
+    private func transportButton(_ systemName: String, size: CGFloat, action: @escaping () -> Void) -> some View {
+        Button { action(); keepControlsVisible() } label: {
+            Image(systemName: systemName)
+                .font(.system(size: size))
+                .foregroundStyle(.white)
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+    }
+
+    /// Shows the controls and hides them again after 4s of no interaction while playing.
+    private func keepControlsVisible() {
+        controlsHideToken += 1
+        let token = controlsHideToken
+        Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if token == controlsHideToken, player.isPlaying, !seeking, !showTrackPicker, !showPictureControls, !showSpeechDialog {
+                withAnimation(.easeInOut(duration: 0.25)) { showControls = false }
+            }
+        }
+    }
+
+    /// The rotate button: locks to landscape when currently upright, back to portrait otherwise. The lock is lifted
+    /// again when the player closes.
+    private func toggleOrientation(landscapeNow: Bool) {
+        OrientationLock.lock(landscapeNow ? .portrait : .landscapeRight)
     }
 
     private var speedLabel: String { "\(player.playbackRate == 1 ? "1" : String(format: "%g", player.playbackRate))x" }
@@ -448,7 +516,10 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     func mediaPlayerTimeChanged(_ notification: Notification) {
         DispatchQueue.main.async {
             let previous = self.time
-            self.time = self.mediaPlayer.time.intValue
+            let now = self.mediaPlayer.time.intValue
+            // Republish at most ~4x/s: each change re-renders the whole player view.
+            guard abs(now - previous) >= 250 || now < previous else { return }
+            self.time = now
             self.duration = self.mediaPlayer.media?.length.intValue ?? 0
             // Proof of actual playback in the log (every ~5s of media time), not just "state=playing".
             if self.time / 5000 != previous / 5000 || (previous == 0 && self.time > 0) {
