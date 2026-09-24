@@ -34,7 +34,14 @@ struct PlayerScreen: View {
         ZStack {
             Color.black.ignoresSafeArea()
             VlcVideoView(player: player).ignoresSafeArea()
+                .allowsHitTesting(false)
+
+            // Gestures live on a transparent layer above the video, not on the video view itself: once playback
+            // starts, libVLC inserts its own vout view (with its own tap recognizer) inside the drawable, which
+            // swallowed every tap — so the controls could be hidden but never shown again.
+            Color.clear
                 .contentShape(Rectangle())
+                .ignoresSafeArea()
                 .gesture(
                     SpatialTapGesture(count: 2)
                         .onEnded { value in handleDoubleTap(at: value.location, size: geo.size) }
@@ -536,6 +543,8 @@ struct VlcVideoView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = .black
+        // Touches never go to libVLC's vout view; the SwiftUI overlay above handles them.
+        view.isUserInteractionEnabled = false
         player.mediaPlayer.drawable = view
         return view
     }
