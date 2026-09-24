@@ -250,6 +250,12 @@ actor SmbRegistry {
                                   password: SmbServerStore.password(for: profile.host), domain: profile.domain)
     }
 
+    /// Registers a login without the `listShares` check — only for the CI end-to-end hook, whose Samba server does
+    /// not answer AMSMB2's share enumeration (a real Windows share does; browsing uses it).
+    func registerUnchecked(host: String, username: String, password: String, domain: String) {
+        connections[host.lowercased()] = SmbConnection(host: host, username: username, password: password, domain: domain)
+    }
+
     func connect(host: String, username: String, password: String, domain: String) async throws -> SmbConnection {
         let conn = SmbConnection(host: host, username: username, password: password, domain: domain)
         _ = try await conn.listShares() // fail fast with a clear error if the login is wrong

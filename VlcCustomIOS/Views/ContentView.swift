@@ -47,13 +47,8 @@ struct ContentView: View {
     private func startDemoSmbPlayback() async {
         let env = ProcessInfo.processInfo.environment
         guard let host = env["DEMO_SMB_HOST"], let file = env["DEMO_SMB_FILE"] else { return }
-        do {
-            _ = try await SmbRegistry.shared.connect(host: host, username: env["DEMO_SMB_USER"] ?? "",
-                                                     password: env["DEMO_SMB_PASS"] ?? "", domain: "")
-        } catch {
-            PlaybackDiagnostics.append("demo: connect failed: \(error.localizedDescription)")
-            return
-        }
+        await SmbRegistry.shared.registerUnchecked(host: host, username: env["DEMO_SMB_USER"] ?? "",
+                                                   password: env["DEMO_SMB_PASS"] ?? "", domain: "")
         let item = VideoItem(name: (file as NSString).lastPathComponent, source: "smb://\(host)/\(file)",
                              sizeBytes: 0, lastModified: .distantPast)
         PlaybackQueue.shared.start([item], index: 0, label: "demo")
