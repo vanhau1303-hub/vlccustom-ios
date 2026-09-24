@@ -8,8 +8,28 @@ struct MusicPlayerScreen: View {
     @StateObject private var player = MusicPlayer.shared
     @State private var seeking = false
     @State private var sliderValue: Double = 0
+    @State private var dragDown: CGFloat = 0
 
     var body: some View {
+        content
+            // Swipe down = collapse to the mini bar (the music keeps playing).
+            .offset(y: dragDown)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 20)
+                    .onChanged { value in
+                        guard value.translation.height > abs(value.translation.width) else { return }
+                        dragDown = value.translation.height
+                    }
+                    .onEnded { value in
+                        if dragDown > 120 || value.predictedEndTranslation.height > 400 {
+                            onClose()
+                        }
+                        withAnimation(.easeOut(duration: 0.2)) { dragDown = 0 }
+                    }
+            )
+    }
+
+    private var content: some View {
         NavigationStack {
             VStack(spacing: 24) {
                 Spacer()
@@ -75,7 +95,9 @@ struct MusicPlayerScreen: View {
             .padding()
             .edgeSwipeBack { onClose() }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Đóng") { onClose() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { onClose() } label: { Image(systemName: "chevron.down").font(.title3.weight(.semibold)) }
+                }
             }
             .alert("Không phát được bài này", isPresented: $player.showError) {
                 Button("Đóng", role: .cancel) {}

@@ -114,6 +114,7 @@ private struct LocalAudioList: View {
     private func play(_ song: AudioItem) {
         MusicQueue.shared.start(displayed, index: displayed.firstIndex(of: song) ?? 0)
         MusicPlayer.shared.playCurrent()
+        MusicUI.shared.expand()
     }
 
     private func addToPlaylist(_ playlist: Playlist) {
@@ -303,6 +304,7 @@ private struct SmbAudioBrowser: View {
         let index = songs.firstIndex(of: entry) ?? 0
         MusicQueue.shared.start(items, index: index, label: "SMB: \(connection.host)/\(path)")
         MusicPlayer.shared.playCurrent()
+        MusicUI.shared.expand()
     }
 
     private func goUp() {

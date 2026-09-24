@@ -42,6 +42,7 @@ struct FavoritesView: View {
             .navigationTitle("Yêu thích")
             .sheet(item: $opening) { favorite in
                 FavoriteFolderBrowser(favorite: favorite)
+                    .musicPlayerHost()
             }
             .task { favorites = FavoritesStore.load() }
         }

@@ -358,6 +358,8 @@ struct ImageViewerScreen: View {
 
     @State private var index: Int
     @State private var slideshow = false
+    @State private var dragDown: CGFloat = 0
+    @State private var zoomed = false
 
     /// Loads the next and previous pictures ahead of the swipe.
     private func prefetch(around center: Int) {
@@ -378,16 +380,35 @@ struct ImageViewerScreen: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black.opacity(1 - min(0.7, Double(dragDown) / 400)).ignoresSafeArea()
             if items.isEmpty {
                 Text("Không có ảnh").foregroundStyle(.white)
             } else {
                 TabView(selection: $index) {
                     ForEach(items.indices, id: \.self) { i in
-                        ZoomableImage(item: items[i], dataProvider: dataProvider).tag(i)
+                        ZoomableImage(item: items[i], dataProvider: dataProvider, zoomed: $zoomed).tag(i)
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
+                .offset(y: dragDown)
+                .scaleEffect(1 - min(0.25, dragDown / 1600))
+                // Swipe down = close and go back to the folder. Only for mostly-vertical drags, so the horizontal
+                // swipe to the next picture is untouched; off entirely while zoomed in (that drag pans the picture).
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 20)
+                        .onChanged { value in
+                            guard value.translation.height > 0, value.translation.height > abs(value.translation.width) else { return }
+                            dragDown = value.translation.height
+                        }
+                        .onEnded { value in
+                            if dragDown > 120 || (dragDown > 30 && value.predictedEndTranslation.height > 400) {
+                                onClose()
+                            } else {
+                                withAnimation(.easeOut(duration: 0.2)) { dragDown = 0 }
+                            }
+                        },
+                    including: zoomed ? .none : .all
+                )
                 .onChange(of: index) { newIndex in prefetch(around: newIndex) }
                 .onAppear { prefetch(around: index) }
             }
@@ -395,6 +416,7 @@ struct ImageViewerScreen: View {
             VStack {
                 HStack {
                     Button { onClose() } label: { Image(systemName: "xmark.circle.fill").font(.title2) }
+                        .opacity(dragDown > 0 ? 0 : 1)
                     Spacer()
                     if items.count > 1 {
                         Button { slideshow.toggle() } label: {
@@ -421,6 +443,8 @@ struct ImageViewerScreen: View {
 private struct ZoomableImage: View {
     let item: ImageItem
     let dataProvider: (ImageItem) async -> Data?
+    /// Reported up so the viewer can switch its swipe-down-to-close off while this picture is zoomed in.
+    @Binding var zoomed: Bool
     @State private var image: UIImage?
     @State private var placeholder: UIImage?
     @State private var scale: CGFloat = 1
@@ -441,6 +465,7 @@ private struct ZoomableImage: View {
                             .onChanged { value in scale = max(1, lastScale * value) }
                             .onEnded { _ in
                                 lastScale = scale
+                                zoomed = scale > 1
                                 if scale <= 1 { withAnimation { offset = .zero; lastOffset = .zero } }
                             }
                     )
@@ -457,6 +482,7 @@ private struct ZoomableImage: View {
                     )
                     .onTapGesture(count: 2) {
                         withAnimation { scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero }
+                        zoomed = false
                     }
             } else if let placeholder {
                 // The grid thumbnail, shown instantly while the full picture loads.

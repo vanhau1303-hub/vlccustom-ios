@@ -47,6 +47,7 @@ enum SmbOpener {
             }
             MusicQueue.shared.start(items, index: songs.firstIndex(of: entry) ?? 0, label: label)
             MusicPlayer.shared.playCurrent()
+            MusicUI.shared.expand()
             return .audio
         case .other:
             return .none

@@ -152,6 +152,7 @@ private struct PlaylistDetailView: View {
             let index = items.firstIndex(of: item) ?? 0
             MusicQueue.shared.start(audioItems, index: index, label: name)
             MusicPlayer.shared.playCurrent()
+            MusicUI.shared.expand()
         }
     }
 }

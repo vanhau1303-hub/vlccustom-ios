@@ -1,8 +1,6 @@
 import SwiftUI
 
 struct ContentView: View {
-    @ObservedObject private var musicQueue = MusicQueue.shared
-    @State private var showMusicPlayer = false
     /// Lets CI's demo-screenshot workflow launch straight into a given tab (via the `DEMO_TAB` environment
     /// variable) so every screen can be screenshotted without a real device to tap through them by hand.
     @State private var selectedTab = Self.initialTab()
@@ -19,14 +17,7 @@ struct ContentView: View {
             SettingsView()
                 .tabItem { Label("Cài đặt", systemImage: "gearshape") }.tag(2)
         }
-        .safeAreaInset(edge: .bottom) {
-            if musicQueue.current != nil {
-                NowPlayingBar(onTap: { showMusicPlayer = true })
-            }
-        }
-        .fullScreenCover(isPresented: $showMusicPlayer) {
-            MusicPlayerScreen(onClose: { showMusicPlayer = false })
-        }
+        .musicPlayerHost()
         .background(
             EmptyView().fullScreenCover(isPresented: $demoPlaying) {
                 PlayerScreen(onClose: { demoPlaying = false })
@@ -120,12 +111,15 @@ struct SettingsView: View {
             }
             .navigationTitle("VLCcustom cho iOS")
             .sheet(item: $library) { screen in
-                switch screen {
-                case .video: LocalLibraryView()
-                case .music: MusicLibraryView()
-                case .images: ImagesLibraryView()
-                case .playlists: PlaylistsView()
+                Group {
+                    switch screen {
+                    case .video: LocalLibraryView()
+                    case .music: MusicLibraryView()
+                    case .images: ImagesLibraryView()
+                    case .playlists: PlaylistsView()
+                    }
                 }
+                .musicPlayerHost()
             }
         }
     }
