@@ -180,6 +180,7 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     func mediaPlayerStateChanged(_ notification: Notification) {
         DispatchQueue.main.async {
             self.isPlaying = self.mediaPlayer.isPlaying
+            if self.isPlaying { MusicUI.shared.showMiniBar() }
             switch self.mediaPlayer.state {
             case .ended:
                 self.didReachEnd = true

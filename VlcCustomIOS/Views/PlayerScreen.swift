@@ -171,7 +171,10 @@ struct PlayerScreen: View {
             }
         }
         .statusBarHidden()
-        .onAppear { player.playCurrent(); PlaybackActivity.shared.isBusy = true; keepControlsVisible() }
+        .onAppear {
+            MusicUI.shared.videoOpened()
+            player.playCurrent(); PlaybackActivity.shared.isBusy = true; keepControlsVisible()
+        }
         .onDisappear {
             player.stop(); live.stop(); PlaybackActivity.shared.isBusy = false
             OrientationLock.unlock()

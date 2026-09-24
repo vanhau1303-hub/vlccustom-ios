@@ -410,7 +410,10 @@ struct ImageViewerScreen: View {
                     including: zoomed ? .none : .all
                 )
                 .onChange(of: index) { newIndex in prefetch(around: newIndex) }
-                .onAppear { prefetch(around: index) }
+                .onAppear {
+                    prefetch(around: index)
+                    MusicUI.shared.picturesOpened()
+                }
             }
 
             VStack {
