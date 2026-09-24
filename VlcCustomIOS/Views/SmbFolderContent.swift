@@ -111,16 +111,22 @@ struct SmbFolderContent: View {
 
     var body: some View {
         if librarySettings.viewMode == .grid {
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 8)], spacing: 12) {
-                    ForEach(entries) { entry in
-                        Button { onOpen(entry) } label: { gridCell(entry) }
-                            .buttonStyle(.plain)
-                            .disabled(entry.kind == .other)
-                            .contextMenu { menu(entry) }
+            // As big as the screen allows: 2 columns upright, 4 in landscape.
+            GeometryReader { geo in
+                let columns = geo.size.width > geo.size.height ? 4 : 2
+                let spacing: CGFloat = 10
+                let cellWidth = max(80, floor((geo.size.width - 24 - spacing * CGFloat(columns - 1)) / CGFloat(columns)))
+                ScrollView {
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(cellWidth), spacing: spacing), count: columns), spacing: 14) {
+                        ForEach(entries) { entry in
+                            Button { onOpen(entry) } label: { gridCell(entry, width: cellWidth) }
+                                .buttonStyle(.plain)
+                                .disabled(entry.kind == .other)
+                                .contextMenu { menu(entry) }
+                        }
                     }
+                    .padding(12)
                 }
-                .padding(12)
             }
         } else {
             List(entries) { entry in
@@ -145,16 +151,19 @@ struct SmbFolderContent: View {
     }
 
     @ViewBuilder
-    private func gridCell(_ entry: SmbEntry) -> some View {
-        let width = librarySettings.thumbnailSize.gridCell
-        VStack(alignment: .leading, spacing: 4) {
+    private func gridCell(_ entry: SmbEntry, width: CGFloat) -> some View {
+        // Every cell is the same 16:9 box so rows line up; folders fill theirs with a big folder symbol.
+        let height = width * 9 / 16
+        VStack(alignment: .leading, spacing: 5) {
             switch entry.kind {
-            case .folder: FolderThumbnailView(size: width)
-            case .video: VideoThumbnailView(source: "smb://\(host)/\(entry.path)", size: width * 9 / 16)
-            case .image: SmbImageThumbnailView(host: host, path: entry.path, width: width, height: width * 9 / 16)
-            case .audio, .other: SmbEntryThumbnail(entry: entry, host: host, size: width * 9 / 16).frame(width: width)
+            case .folder: FolderThumbnailView(size: height, width: width)
+            case .video: VideoThumbnailView(source: "smb://\(host)/\(entry.path)", size: height)
+            case .image: SmbImageThumbnailView(host: host, path: entry.path, width: width, height: height)
+            case .audio:
+                MusicThumbnailView(size: height).frame(width: width).background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15)))
+            case .other: SmbEntryThumbnail(entry: entry, host: host, size: height).frame(width: width)
             }
-            Text(entry.name).font(.caption2).lineLimit(2).multilineTextAlignment(.leading)
+            Text(entry.name).font(.footnote).lineLimit(2).multilineTextAlignment(.leading)
         }
         .frame(width: width, alignment: .leading)
     }

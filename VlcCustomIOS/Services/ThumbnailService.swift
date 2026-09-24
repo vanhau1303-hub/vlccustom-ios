@@ -14,10 +14,28 @@ actor ThumbnailService {
     private let memoryCache = NSCache<NSString, UIImage>()
     private let diskDirectory: URL
 
+    /// Application Support/Thumbnails — the app's own storage, not Caches (which iOS empties whenever it likes, so
+    /// every folder had to regenerate its thumbnails over SMB). Excluded from iCloud backup: it can be rebuilt.
+    static let directory: URL = {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        var dir = support.appendingPathComponent("Thumbnails", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
+        return dir
+    }()
+
     private init() {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        diskDirectory = caches.appendingPathComponent("thumbnails", isDirectory: true)
-        try? FileManager.default.createDirectory(at: diskDirectory, withIntermediateDirectories: true)
+        diskDirectory = Self.directory
+        // Thumbnails made before this lived in Caches/thumbnails: move them over instead of regenerating.
+        let old = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("thumbnails")
+        if let files = try? FileManager.default.contentsOfDirectory(at: old, includingPropertiesForKeys: nil) {
+            for file in files {
+                try? FileManager.default.moveItem(at: file, to: Self.directory.appendingPathComponent(file.lastPathComponent))
+            }
+            try? FileManager.default.removeItem(at: old)
+        }
         // Bounded by bytes, not just count: 300 decoded 480px thumbnails alone could take >100MB, on top of libVLC.
         memoryCache.countLimit = 200
         memoryCache.totalCostLimit = 40 * 1024 * 1024
@@ -85,7 +103,7 @@ actor ThumbnailService {
         if let cached = cachedThumbnail(source: source) { return cached }
 
         let login = await SmbRegistry.shared.login(for: host)
-        guard let cgImage = await Self.vlcSnapshot(host: host, path: path, login: login, width: 480, position: 0.1) else {
+        guard let cgImage = await Self.vlcSnapshot(host: host, path: path, login: login, width: 640, position: 0.1) else {
             PlaybackDiagnostics.append("thumb: VLC gave no frame for \(path)")
             return nil
         }
@@ -104,7 +122,7 @@ actor ThumbnailService {
         defer { releaseSmbSlot() }
         if Task.isCancelled { return nil }
         if let cached = cachedThumbnail(source: source) { return cached }
-        guard let data = await SmbImageLoader.data(host: host, path: path, fallbackWidth: 480) else { return nil }
+        guard let data = await SmbImageLoader.data(host: host, path: path, fallbackWidth: 640) else { return nil }
         return await imageThumbnail(source: source, data: data)
     }
 
@@ -152,7 +170,7 @@ actor ThumbnailService {
         } else {
             sourceData = nil
         }
-        guard let sourceData, let thumbnail = Self.downsample(sourceData, maxDimension: 480) else { return nil }
+        guard let sourceData, let thumbnail = Self.downsample(sourceData, maxDimension: 640) else { return nil }
         remember(thumbnail, key: key)
         saveToDisk(thumbnail, key: key)
         return thumbnail
@@ -179,12 +197,26 @@ actor ThumbnailService {
 
     private func loadFromDisk(_ key: String) -> UIImage? {
         guard let data = try? Data(contentsOf: diskURL(key)) else { return nil }
-        return UIImage(data: data)
+        // `UIImage(data:)` would defer decoding to the first draw — on the main thread, mid-scroll. ImageIO with
+        // ShouldCacheImmediately decodes here, off the main thread.
+        return Self.downsample(data, maxDimension: 800)
     }
 
     private func saveToDisk(_ image: UIImage, key: String) {
-        guard let data = image.jpegData(compressionQuality: 0.7) else { return }
+        guard let data = image.jpegData(compressionQuality: 0.75) else { return }
         try? data.write(to: diskURL(key))
+    }
+
+    /// Size of the thumbnail folder, and wiping it (Cài đặt).
+    nonisolated static func diskUsage() -> Int64 {
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        return files.reduce(0) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+    }
+
+    func clearAll() {
+        memoryCache.removeAllObjects()
+        let files = (try? FileManager.default.contentsOfDirectory(at: diskDirectory, includingPropertiesForKeys: nil)) ?? []
+        for file in files { try? FileManager.default.removeItem(at: file) }
     }
 }
 

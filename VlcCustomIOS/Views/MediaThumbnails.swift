@@ -52,16 +52,18 @@ struct MusicThumbnailView: View {
 
 /// A leading icon box for a folder row, sized the same way.
 struct FolderThumbnailView: View {
+    /// Height of the box (and its width too unless `width` is given).
     let size: CGFloat
+    var width: CGFloat?
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.12))
             Image(systemName: "folder.fill")
-                .font(.system(size: size * 0.5))
+                .font(.system(size: size * 0.55))
                 .foregroundStyle(Color.accentColor)
         }
-        .frame(width: size, height: size)
+        .frame(width: width ?? size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

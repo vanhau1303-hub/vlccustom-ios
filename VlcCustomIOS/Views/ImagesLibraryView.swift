@@ -359,6 +359,15 @@ struct ImageViewerScreen: View {
     @State private var index: Int
     @State private var slideshow = false
 
+    /// Loads the next and previous pictures ahead of the swipe.
+    private func prefetch(around center: Int) {
+        for i in [center + 1, center - 1] where items.indices.contains(i) {
+            let item = items[i]
+            guard FullImageCache.image(for: item.source) == nil else { continue }
+            Task(priority: .utility) { _ = await FullImageCache.load(item, dataProvider: dataProvider) }
+        }
+    }
+
     init(items: [ImageItem], startIndex: Int, dataProvider: @escaping (ImageItem) async -> Data?, onClose: @escaping () -> Void) {
         self.items = items
         self.startIndex = startIndex
@@ -379,6 +388,8 @@ struct ImageViewerScreen: View {
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
+                .onChange(of: index) { newIndex in prefetch(around: newIndex) }
+                .onAppear { prefetch(around: index) }
             }
 
             VStack {
@@ -411,6 +422,7 @@ private struct ZoomableImage: View {
     let item: ImageItem
     let dataProvider: (ImageItem) async -> Data?
     @State private var image: UIImage?
+    @State private var placeholder: UIImage?
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
     @State private var offset: CGSize = .zero
@@ -446,18 +458,54 @@ private struct ZoomableImage: View {
                     .onTapGesture(count: 2) {
                         withAnimation { scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero }
                     }
+            } else if let placeholder {
+                // The grid thumbnail, shown instantly while the full picture loads.
+                Image(uiImage: placeholder).resizable().scaledToFit()
+                    .overlay(alignment: .bottomTrailing) { ProgressView().tint(.white).padding() }
             } else {
                 ProgressView().tint(.white)
             }
         }
-        .task {
-            // Downsampled to about screen size: a full-size decode of a big photo is ~200MB, and the pager keeps
-            // neighbours loaded too.
-            if let data = await dataProvider(item) {
-                image = ThumbnailService.downsample(data, maxDimension: 2560)
-            } else if let url = URL(string: item.source), let data = try? Data(contentsOf: url) {
-                image = ThumbnailService.downsample(data, maxDimension: 2560)
-            }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: item.id) {
+            if let cached = FullImageCache.image(for: item.source) { image = cached; return }
+            placeholder = await ThumbnailService.shared.cachedThumbnail(source: item.source)
+            image = await FullImageCache.load(item, dataProvider: dataProvider)
         }
+    }
+}
+
+/// Screen-sized decoded pictures for the viewer: loaded and decoded off the main thread (decoding on it is what made
+/// swiping stutter), kept for a few pages so swiping back is instant, and prefetched for the neighbours.
+enum FullImageCache {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 8
+        cache.totalCostLimit = 160 * 1024 * 1024
+        return cache
+    }()
+
+    static func image(for source: String) -> UIImage? {
+        cache.object(forKey: source as NSString)
+    }
+
+    static func load(_ item: ImageItem, dataProvider: @escaping (ImageItem) async -> Data?) async -> UIImage? {
+        if let cached = image(for: item.source) { return cached }
+        let data: Data?
+        if let provided = await dataProvider(item) {
+            data = provided
+        } else if let url = URL(string: item.source) {
+            data = await Task.detached(priority: .userInitiated) { try? Data(contentsOf: url) }.value
+        } else {
+            data = nil
+        }
+        guard let data else { return nil }
+        // About screen size: a full-size decode of a big photo is ~200MB.
+        let decoded = await Task.detached(priority: .userInitiated) { ThumbnailService.downsample(data, maxDimension: 2560) }.value
+        if let decoded {
+            let cost = Int(decoded.size.width * decoded.size.height * decoded.scale * decoded.scale * 4)
+            cache.setObject(decoded, forKey: item.source as NSString, cost: cost)
+        }
+        return decoded
     }
 }

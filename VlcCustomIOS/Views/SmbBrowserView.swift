@@ -27,9 +27,12 @@ struct SmbBrowserView: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 8) {
                 if connection == nil {
-                    connectForm
-                    if !savedProfiles.isEmpty { savedServersRow }
-                    if let status { Text(status).foregroundStyle(.red).font(.footnote) }
+                    Group {
+                        connectForm
+                        if !savedProfiles.isEmpty { savedServersRow }
+                        if let status { Text(status).foregroundStyle(.red).font(.footnote) }
+                    }
+                    .padding(.horizontal)
                 } else {
                     HStack(spacing: 8) {
                         // Back = up one folder; only from the list of shares does it leave the server.
@@ -46,12 +49,16 @@ struct SmbBrowserView: View {
                             }
                         }
                     }
+                    .padding(.horizontal, 8)
                 }
                 list
             }
-            .padding(.horizontal)
+            // Pinned to the top — a VStack in a NavigationStack is otherwise centred vertically, which left the
+            // connect form floating mid-screen.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .dismissesKeyboardOnTap()
-            .navigationTitle("Mạng (SMB)")
+            .navigationTitle("Mạng")
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) { ThumbnailSizeMenu() }
