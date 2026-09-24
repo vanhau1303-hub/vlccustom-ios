@@ -2,7 +2,7 @@ import SwiftUI
 import MobileVLCKit
 import UIKit
 
-enum PlayerDragMode: Equatable { case seek, brightness, volume }
+enum PlayerDragMode: Equatable { case seek, brightness, volume, edgeBack }
 
 /// Full-screen player for the current item of `PlaybackQueue`: local files are opened directly, SMB files through
 /// `SmbHttpProxy` (so it does not matter whether VLCKit's own build has SMB2/3 support).
@@ -269,7 +269,10 @@ struct PlayerScreen: View {
                 if dragMode == nil {
                     let dx = abs(value.translation.width)
                     let dy = abs(value.translation.height)
-                    if dx > dy {
+                    if dx > dy, value.startLocation.x < 30, value.translation.width > 0 {
+                        // Swipe in from the left edge = back (close the player), like everywhere else in the app.
+                        dragMode = .edgeBack
+                    } else if dx > dy {
                         dragMode = .seek
                         seekPreviewMs = Int(player.time)
                     } else if value.startLocation.x < size.width / 2 {
@@ -277,7 +280,7 @@ struct PlayerScreen: View {
                         dragBaseValue = Double(UIScreen.main.brightness)
                     } else {
                         dragMode = .volume
-                        dragBaseValue = Double(player.mediaPlayer.audio?.volume ?? 100)
+                        dragBaseValue = Double(SystemVolume.current)
                     }
                 }
                 switch dragMode {
@@ -293,17 +296,23 @@ struct PlayerScreen: View {
                     UIScreen.main.brightness = newValue
                     gestureHint = "Độ sáng \(Int(newValue * 100))%"
                 case .volume:
-                    let delta = Double(-value.translation.height / size.height) * 200
-                    let newValue = min(200, max(0, dragBaseValue + delta))
-                    player.mediaPlayer.audio?.volume = Int32(newValue)
-                    gestureHint = "Âm lượng \(Int(newValue))%"
+                    // System volume: applies instantly (libVLC's own volume lagged behind its audio buffer).
+                    let delta = Double(-value.translation.height / size.height) * 1.5
+                    let newValue = min(1, max(0, dragBaseValue + delta))
+                    SystemVolume.set(Float(newValue))
+                    gestureHint = "Âm lượng \(Int((newValue * 100).rounded()))%"
+                case .edgeBack:
+                    gestureHint = value.translation.width > 90 ? "← Thoát" : nil
                 case .none:
                     break
                 }
             }
-            .onEnded { _ in
+            .onEnded { value in
                 if dragMode == .seek, let seekPreviewMs, player.duration > 0 {
                     player.seek(to: Double(seekPreviewMs) / Double(player.duration))
+                }
+                if dragMode == .edgeBack, value.translation.width > 90 || value.predictedEndTranslation.width > 200 {
+                    close()
                 }
                 dragMode = nil
                 seekPreviewMs = nil

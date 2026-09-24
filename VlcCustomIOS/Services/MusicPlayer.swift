@@ -130,6 +130,11 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         updateNowPlaying()
     }
 
+    func skip(ms: Int32) {
+        let target = max(0, mediaPlayer.time.intValue + ms)
+        mediaPlayer.time = VLCTime(int: duration > 0 ? min(target, duration - 500) : target)
+    }
+
     func seek(to fraction: Double) {
         mediaPlayer.position = Float(fraction)
     }

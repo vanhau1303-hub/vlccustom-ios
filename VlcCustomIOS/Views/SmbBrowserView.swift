@@ -188,7 +188,8 @@ struct SmbBrowserView: View {
 
     private var displayedEntries: [SmbEntry] {
         let base = query.isEmpty ? entries : entries.filter { $0.name.localizedCaseInsensitiveContains(query) }
-        return sort.apply(base)
+        // Folders always on top (like Yêu thích); the chosen sort applies within folders and within files.
+        return sort.apply(base.filter(\.isDirectory)) + sort.apply(base.filter { !$0.isDirectory })
     }
 
     private func connect() {

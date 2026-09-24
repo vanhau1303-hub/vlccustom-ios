@@ -9,24 +9,63 @@ struct MusicPlayerScreen: View {
     @State private var seeking = false
     @State private var sliderValue: Double = 0
     @State private var dragDown: CGFloat = 0
+    /// Set when a vertical drag started on the right half: it adjusts the volume instead of collapsing.
+    @State private var volumeDrag: Float?
+    @State private var hint: String?
 
     var body: some View {
-        content
-            // Swipe down = collapse to the mini bar (the music keeps playing).
-            .offset(y: dragDown)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 20)
-                    .onChanged { value in
-                        guard value.translation.height > abs(value.translation.width) else { return }
-                        dragDown = value.translation.height
-                    }
-                    .onEnded { value in
-                        if dragDown > 120 || value.predictedEndTranslation.height > 400 {
-                            onClose()
+        GeometryReader { geo in
+            content
+                // Swipe down on the left half = collapse to the mini bar (the music keeps playing);
+                // swipe up/down on the right half = volume, like the video player.
+                .offset(y: dragDown)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 20)
+                        .onChanged { value in
+                            guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                            if volumeDrag == nil, value.startLocation.x > geo.size.width / 2 {
+                                volumeDrag = SystemVolume.current
+                            }
+                            if let base = volumeDrag {
+                                let newValue = min(1, max(0, base + Float(-value.translation.height / geo.size.height) * 1.5))
+                                SystemVolume.set(newValue)
+                                hint = "Âm lượng \(Int((newValue * 100).rounded()))%"
+                            } else if value.translation.height > 0 {
+                                dragDown = value.translation.height
+                            }
                         }
-                        withAnimation(.easeOut(duration: 0.2)) { dragDown = 0 }
+                        .onEnded { value in
+                            if volumeDrag == nil, dragDown > 120 || value.predictedEndTranslation.height > 400 {
+                                onClose()
+                            }
+                            volumeDrag = nil
+                            hint = nil
+                            withAnimation(.easeOut(duration: 0.2)) { dragDown = 0 }
+                        }
+                )
+                .overlay {
+                    if let hint {
+                        Text(hint)
+                            .font(.headline).foregroundStyle(.white)
+                            .padding(.horizontal, 16).padding(.vertical, 8)
+                            .background(Color.black.opacity(0.7))
+                            .clipShape(Capsule())
+                            .allowsHitTesting(false)
                     }
-            )
+                }
+        }
+    }
+
+    /// Double-tap the left/right half of the artwork: back/forward 30s.
+    private func handleDoubleTap(_ location: CGPoint, width: CGFloat) {
+        let forward = location.x > width / 2
+        player.skip(ms: forward ? 30_000 : -30_000)
+        let text = forward ? "+30s" : "-30s"
+        hint = text
+        Task {
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            if hint == text { hint = nil }
+        }
     }
 
     private var content: some View {
@@ -46,6 +85,8 @@ struct MusicPlayerScreen: View {
                 }
                 .frame(width: 280, height: 280)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
+                .contentShape(Rectangle())
+                .gesture(SpatialTapGesture(count: 2).onEnded { value in handleDoubleTap(value.location, width: 280) })
                 .shadow(color: .black.opacity(0.2), radius: 12, y: 6)
 
                 VStack(spacing: 4) {
