@@ -427,15 +427,21 @@ private struct ZoomableImage: View {
                     .gesture(
                         MagnificationGesture()
                             .onChanged { value in scale = max(1, lastScale * value) }
-                            .onEnded { _ in lastScale = scale }
+                            .onEnded { _ in
+                                lastScale = scale
+                                if scale <= 1 { withAnimation { offset = .zero; lastOffset = .zero } }
+                            }
                     )
+                    // Panning only exists while zoomed in. At 1x the drag gesture is switched off entirely
+                    // (`including: .none`) — merely ignoring it still swallowed the swipe, so the pager behind could
+                    // never move to the next picture.
                     .simultaneousGesture(
                         DragGesture()
                             .onChanged { value in
-                                guard scale > 1 else { return }
                                 offset = CGSize(width: lastOffset.width + value.translation.width, height: lastOffset.height + value.translation.height)
                             }
-                            .onEnded { _ in lastOffset = offset }
+                            .onEnded { _ in lastOffset = offset },
+                        including: scale > 1 ? .all : .none
                     )
                     .onTapGesture(count: 2) {
                         withAnimation { scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero }

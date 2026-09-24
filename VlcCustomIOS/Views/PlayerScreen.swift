@@ -19,7 +19,7 @@ struct PlayerScreen: View {
     @StateObject private var live = LiveSubtitles.shared
 
     // Gesture state — mirrors the Android player: horizontal drag seeks, vertical drag on the left half adjusts
-    // screen brightness and on the right half adjusts VLC's own volume, double-tap on either side skips ±10s and
+    // screen brightness and on the right half adjusts VLC's own volume, double-tap on either side skips ±30s and
     // double-tap in the middle toggles play/pause.
     @State private var dragMode: PlayerDragMode?
     @State private var dragBaseValue: Double = 0
@@ -74,7 +74,7 @@ struct PlayerScreen: View {
                         .padding(.horizontal, 24)
                 }
             }
-            .padding(.bottom, showControls ? 150 : 28)
+            .padding(.bottom, showControls ? 230 : 28)
             .allowsHitTesting(false)
 
             if live.running, let status = live.status {
@@ -95,35 +95,13 @@ struct PlayerScreen: View {
 
             if showControls {
                 VStack(spacing: 0) {
-                    // Top bar: close + title on the left, the most used actions as roomy 44pt round buttons on the
-                    // right, and the rarer ones (aspect, deinterlace, picture) tucked into a "more" menu so nothing is
-                    // cramped even in portrait.
+                    // Top bar: close + file name only. All tools sit in the bottom panel as roomy 44pt round
+                    // buttons, the rarer ones (aspect, deinterlace, picture) tucked into a "more" menu.
                     HStack(spacing: 10) {
                         controlButton("xmark") { close() }
                         Text(queue.current?.name ?? "")
-                            .font(.subheadline.weight(.medium)).foregroundStyle(.white).lineLimit(1)
-                        Spacer(minLength: 8)
-                        Button { cycleSpeed(); keepControlsVisible() } label: {
-                            Text(speedLabel).font(.subheadline.monospacedDigit().weight(.semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 44, height: 44)
-                                .background(Circle().fill(Color.black.opacity(0.35)))
-                        }
-                        controlButton("rotate.right") { toggleOrientation(landscapeNow: geo.size.width > geo.size.height) }
-                        if queue.items.count > 1 {
-                            controlButton("list.bullet") { showQueue = true }
-                        }
-                        controlButton("captions.bubble") { showTrackPicker = true }
-                        controlButton("waveform") { showSpeechDialog = true }
-                        Menu {
-                            Button { player.cycleAspectRatio() } label: { Label("Tỉ lệ khung hình", systemImage: "aspectratio") }
-                            Button { player.toggleDeinterlace() } label: {
-                                Label(player.deinterlaceOn ? "Tắt khử sọc" : "Bật khử sọc", systemImage: "tv")
-                            }
-                            Button { showPictureControls = true } label: { Label("Chỉnh màu", systemImage: "slider.horizontal.3") }
-                        } label: {
-                            controlIcon("ellipsis")
-                        }
+                            .font(.subheadline.weight(.medium)).foregroundStyle(.white).lineLimit(2)
+                        Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
@@ -158,6 +136,30 @@ struct PlayerScreen: View {
                             transportButton("goforward.10", size: 26) { player.skip(ms: 10_000) }
                             transportButton("forward.end.fill", size: 22) { playNextOrClose() }
                                 .disabled(!queue.hasNext).opacity(queue.hasNext ? 1 : 0.35)
+                        }
+                        // Tools row, under the transport controls (the top bar only carries close + the file name).
+                        HStack(spacing: 14) {
+                            Button { cycleSpeed(); keepControlsVisible() } label: {
+                                Text(speedLabel).font(.subheadline.monospacedDigit().weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 44, height: 44)
+                                    .background(Circle().fill(Color.black.opacity(0.35)))
+                            }
+                            controlButton("rotate.right") { toggleOrientation(landscapeNow: geo.size.width > geo.size.height) }
+                            if queue.items.count > 1 {
+                                controlButton("list.bullet") { showQueue = true }
+                            }
+                            controlButton("captions.bubble") { showTrackPicker = true }
+                            controlButton("waveform") { showSpeechDialog = true }
+                            Menu {
+                                Button { player.cycleAspectRatio() } label: { Label("Tỉ lệ khung hình", systemImage: "aspectratio") }
+                                Button { player.toggleDeinterlace() } label: {
+                                    Label(player.deinterlaceOn ? "Tắt khử sọc" : "Bật khử sọc", systemImage: "tv")
+                                }
+                                Button { showPictureControls = true } label: { Label("Chỉnh màu", systemImage: "slider.horizontal.3") }
+                            } label: {
+                                controlIcon("ellipsis")
+                            }
                         }
                     }
                     .padding(.horizontal, 16)
@@ -248,11 +250,11 @@ struct PlayerScreen: View {
 
     private func handleDoubleTap(at location: CGPoint, size: CGSize) {
         if location.x < size.width / 3 {
-            player.skip(ms: -10_000)
-            showHint("-10s")
+            player.skip(ms: -30_000)
+            showHint("-30s")
         } else if location.x > size.width * 2 / 3 {
-            player.skip(ms: 10_000)
-            showHint("+10s")
+            player.skip(ms: 30_000)
+            showHint("+30s")
         } else {
             player.togglePlayPause()
         }

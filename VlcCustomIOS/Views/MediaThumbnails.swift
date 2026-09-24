@@ -57,7 +57,9 @@ struct FolderThumbnailView: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.12))
-            Image(systemName: "folder.fill").foregroundStyle(Color.accentColor)
+            Image(systemName: "folder.fill")
+                .font(.system(size: size * 0.5))
+                .foregroundStyle(Color.accentColor)
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 8))

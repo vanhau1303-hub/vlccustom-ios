@@ -67,6 +67,8 @@ private struct FavoriteFolderBrowser: View {
     @State private var loading = true
     @State private var playing: SmbEntry?
     @State private var viewer: ImageViewerTarget?
+    /// Sub-folders opened below the starred one, so back goes up one level at a time.
+    @State private var pathStack: [String] = []
 
     var body: some View {
         NavigationStack {
@@ -81,8 +83,14 @@ private struct FavoriteFolderBrowser: View {
                     SmbFolderContent(host: connection.host, entries: entries, onOpen: open)
                 }
             }
-            .navigationTitle(favorite.title)
+            .navigationTitle(pathStack.last.map { ($0 as NSString).lastPathComponent } ?? favorite.title)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if !pathStack.isEmpty {
+                        Button { goUp() } label: { Label("Lên", systemImage: "chevron.backward") }
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) { ThumbnailSizeMenu() }
                 ToolbarItem(placement: .confirmationAction) { Button("Đóng") { dismiss() } }
             }
@@ -109,15 +117,26 @@ private struct FavoriteFolderBrowser: View {
         loading = false
     }
 
+    private func goUp() {
+        pathStack.removeLast()
+        show(pathStack.last ?? favorite.path)
+    }
+
+    private func show(_ path: String) {
+        guard let connection else { return }
+        Task {
+            loading = true
+            entries = (try? await connection.list(path: path)) ?? []
+            loading = false
+        }
+    }
+
     private func open(_ entry: SmbEntry) {
         guard let connection else { return }
         switch SmbOpener.open(entry, siblings: entries, host: connection.host, label: favorite.title) {
         case .folder(let path):
-            Task {
-                loading = true
-                entries = (try? await connection.list(path: path)) ?? []
-                loading = false
-            }
+            pathStack.append(path)
+            show(path)
         case .video:
             playing = entry
         case .images(let items, let index):

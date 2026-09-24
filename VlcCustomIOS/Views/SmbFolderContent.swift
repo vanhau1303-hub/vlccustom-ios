@@ -149,7 +149,7 @@ struct SmbFolderContent: View {
         let width = librarySettings.thumbnailSize.gridCell
         VStack(alignment: .leading, spacing: 4) {
             switch entry.kind {
-            case .folder: FolderThumbnailView(size: width * 9 / 16).frame(width: width)
+            case .folder: FolderThumbnailView(size: width)
             case .video: VideoThumbnailView(source: "smb://\(host)/\(entry.path)", size: width * 9 / 16)
             case .image: SmbImageThumbnailView(host: host, path: entry.path, width: width, height: width * 9 / 16)
             case .audio, .other: SmbEntryThumbnail(entry: entry, host: host, size: width * 9 / 16).frame(width: width)

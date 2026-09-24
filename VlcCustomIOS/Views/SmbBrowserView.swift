@@ -31,17 +31,19 @@ struct SmbBrowserView: View {
                     if !savedProfiles.isEmpty { savedServersRow }
                     if let status { Text(status).foregroundStyle(.red).font(.footnote) }
                 } else {
-                    HStack {
-                        Button { disconnect() } label: { Image(systemName: "chevron.backward") }
-                        Text(host + (path.isEmpty ? "" : "/" + path)).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                        Spacer()
+                    HStack(spacing: 8) {
+                        // Back = up one folder; only from the list of shares does it leave the server.
+                        Button { path.isEmpty ? disconnect() : goUp() } label: {
+                            Image(systemName: "chevron.backward").font(.body.weight(.semibold)).frame(width: 36, height: 36)
+                        }
+                        breadcrumbs
                         if !path.isEmpty {
                             Button {
                                 FavoritesStore.toggle(host: host, path: path, title: (path as NSString).lastPathComponent)
                             } label: {
                                 Image(systemName: FavoritesStore.isFavorite(host: host, path: path) ? "star.fill" : "star")
+                                    .frame(width: 36, height: 36)
                             }
-                            Button("↑ Lên trên") { goUp() }
                         }
                     }
                 }
@@ -89,6 +91,42 @@ struct SmbBrowserView: View {
         PlaylistStore.video.addItem(PlaylistItem(uri: uri, title: entry.name), to: playlist.id)
         playlists = PlaylistStore.video.load()
         addingToPlaylist = nil
+    }
+
+    /// Tappable path: server › share › folder › … — tapping a segment jumps straight to that folder.
+    private var breadcrumbs: some View {
+        let parts = path.split(separator: "/").map(String.init)
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    crumb(host, target: "", isLast: parts.isEmpty).id(0)
+                    ForEach(parts.indices, id: \.self) { i in
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                        crumb(parts[i], target: parts[0...i].joined(separator: "/"), isLast: i == parts.count - 1).id(i + 1)
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+            .onChange(of: path) { _ in
+                withAnimation { proxy.scrollTo(parts.count, anchor: .trailing) }
+            }
+        }
+    }
+
+    private func crumb(_ title: String, target: String, isLast: Bool) -> some View {
+        Button {
+            guard !isLast else { return }
+            path = target
+            Task { await load() }
+        } label: {
+            Text(title)
+                .font(.footnote.weight(isLast ? .semibold : .regular))
+                .foregroundStyle(isLast ? Color.primary : Color.accentColor)
+                .lineLimit(1)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(Capsule().fill(isLast ? Color.secondary.opacity(0.15) : Color.accentColor.opacity(0.1)))
+        }
+        .buttonStyle(.plain)
     }
 
     private var connectForm: some View {
