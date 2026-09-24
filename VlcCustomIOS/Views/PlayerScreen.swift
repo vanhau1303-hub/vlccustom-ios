@@ -26,6 +26,7 @@ struct PlayerScreen: View {
     @State private var seekPreviewMs: Int?
     @State private var gestureHint: String?
     @State private var controlsHideToken = 0
+    @State private var showQueue = false
 
     private static let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
@@ -109,6 +110,9 @@ struct PlayerScreen: View {
                                 .background(Circle().fill(Color.black.opacity(0.35)))
                         }
                         controlButton("rotate.right") { toggleOrientation(landscapeNow: geo.size.width > geo.size.height) }
+                        if queue.items.count > 1 {
+                            controlButton("list.bullet") { showQueue = true }
+                        }
                         controlButton("captions.bubble") { showTrackPicker = true }
                         controlButton("waveform") { showSpeechDialog = true }
                         Menu {
@@ -131,12 +135,19 @@ struct PlayerScreen: View {
                     VStack(spacing: 14) {
                         HStack(spacing: 10) {
                             Text(format(player.time)).foregroundStyle(.white).font(.caption).monospacedDigit()
-                            Slider(value: seeking ? $sliderValue : .constant(player.progress), in: 0...1, onEditingChanged: { editing in
-                                seeking = editing
-                                if editing { keepControlsVisible() } else { player.seek(to: sliderValue) }
-                            })
-                            .tint(.white)
-                            .onChange(of: player.progress) { new in if !seeking { sliderValue = new } }
+                            SeekBar(progress: seeking ? sliderValue : player.progress,
+                                    onScrub: { fraction in
+                                        seeking = true
+                                        sliderValue = fraction
+                                        keepControlsVisible()
+                                    },
+                                    onCommit: { fraction in
+                                        sliderValue = fraction
+                                        player.seek(to: fraction)
+                                        keepControlsVisible()
+                                        // Hold the new position until VLC reports it, instead of snapping back.
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { seeking = false }
+                                    })
                             Text(format(player.duration)).foregroundStyle(.white).font(.caption).monospacedDigit()
                         }
                         HStack(spacing: 36) {
@@ -168,6 +179,13 @@ struct PlayerScreen: View {
             Button("Đóng", role: .cancel) {}
         } message: {
             Text("Định dạng/codec chưa được hỗ trợ, file lỗi hoặc mất kết nối mạng (nếu là video từ SMB).")
+        }
+        .sheet(isPresented: $showQueue) {
+            PlayQueueSheet(queue: queue) { index in
+                showQueue = false
+                queue.jump(to: index)
+                player.playCurrent()
+            }
         }
         .sheet(isPresented: $showTrackPicker) {
             TrackPickerSheet(player: player)
@@ -212,7 +230,7 @@ struct PlayerScreen: View {
         let token = controlsHideToken
         Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if token == controlsHideToken, player.isPlaying, !seeking, !showTrackPicker, !showPictureControls, !showSpeechDialog {
+            if token == controlsHideToken, player.isPlaying, !seeking, !showTrackPicker, !showPictureControls, !showSpeechDialog, !showQueue {
                 withAnimation(.easeInOut(duration: 0.25)) { showControls = false }
             }
         }
@@ -625,5 +643,85 @@ struct PictureControlsSheet: View {
             Text(title).font(.subheadline)
             Slider(value: value, in: range)
         }
+    }
+}
+
+/// The player's seek bar: tap anywhere on it to jump straight there, or drag to scrub (the video only seeks when the
+/// finger lifts). A 36pt-tall touch area around a thin track, so it is easy to hit.
+struct SeekBar: View {
+    let progress: Double
+    let onScrub: (Double) -> Void
+    let onCommit: (Double) -> Void
+    @State private var dragging = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = max(geo.size.width, 1)
+            let x = CGFloat(min(max(progress, 0), 1)) * width
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.3)).frame(height: dragging ? 6 : 4)
+                Capsule().fill(Color.white).frame(width: x, height: dragging ? 6 : 4)
+                Circle().fill(Color.white)
+                    .frame(width: dragging ? 20 : 14, height: dragging ? 20 : 14)
+                    .offset(x: x - (dragging ? 10 : 7))
+            }
+            .frame(height: 36)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        dragging = true
+                        onScrub(fraction(value.location.x, width))
+                    }
+                    .onEnded { value in
+                        dragging = false
+                        onCommit(fraction(value.location.x, width))
+                    }
+            )
+            .animation(.easeOut(duration: 0.12), value: dragging)
+        }
+        .frame(height: 36)
+    }
+
+    private func fraction(_ x: CGFloat, _ width: CGFloat) -> Double {
+        Double(min(max(x / width, 0), 1))
+    }
+}
+
+/// The files of the folder the video was opened from, with thumbnails, to pick what to play next.
+struct PlayQueueSheet: View {
+    @ObservedObject var queue: PlaybackQueue
+    let onPick: (Int) -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollViewReader { proxy in
+                List(Array(queue.items.enumerated()), id: \.element.id) { index, item in
+                    Button { onPick(index) } label: {
+                        HStack(spacing: 12) {
+                            VideoThumbnailView(source: item.source, size: 54)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.name).lineLimit(2)
+                                    .fontWeight(index == queue.index ? .semibold : .regular)
+                                    .foregroundStyle(index == queue.index ? Color.accentColor : .primary)
+                                if item.sizeBytes > 0 {
+                                    Text(item.sizeLabel).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                            if index == queue.index {
+                                Image(systemName: "speaker.wave.2.fill").foregroundStyle(Color.accentColor)
+                            }
+                        }
+                    }
+                    .id(index)
+                }
+                .listStyle(.plain)
+                .onAppear { proxy.scrollTo(queue.index, anchor: .center) }
+            }
+            .navigationTitle("Trong thư mục (\(queue.items.count))")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
     }
 }

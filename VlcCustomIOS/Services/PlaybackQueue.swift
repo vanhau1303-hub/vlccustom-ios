@@ -19,6 +19,11 @@ final class PlaybackQueue: ObservableObject {
         self.label = label
     }
 
+    func jump(to index: Int) {
+        guard items.indices.contains(index) else { return }
+        self.index = index
+    }
+
     @discardableResult
     func moveNext() -> VideoItem? {
         guard hasNext else { return nil }

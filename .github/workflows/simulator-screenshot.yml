@@ -78,7 +78,7 @@ jobs:
 
           # Relaunch the app once per tab, telling it which tab to open via the DEMO_TAB env var (ContentView.swift
           # reads it at startup) — the only practical way to demo every screen without a real device to tap through.
-          declare -a TABS=("0:01_video" "1:02_smb" "2:03_music" "3:04_images" "4:05_playlists" "5:06_favorites" "6:07_settings")
+          declare -a TABS=("0:01_favorites" "1:02_smb" "2:03_settings")
           for entry in "${TABS[@]}"; do
             TAB_INDEX="${entry%%:*}"
             TAB_NAME="${entry##*:}"

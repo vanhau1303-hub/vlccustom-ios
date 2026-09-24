@@ -1,0 +1,243 @@
+import SwiftUI
+
+/// What an SMB entry is, for picking its thumbnail and what tapping it does.
+enum SmbEntryKind { case folder, video, image, audio, other }
+
+extension SmbEntry {
+    var kind: SmbEntryKind {
+        if isDirectory { return .folder }
+        if isVideo { return .video }
+        if isImage { return .image }
+        if isAudio { return .audio }
+        return .other
+    }
+}
+
+/// What the caller has to present after `SmbOpener.open` (folders and music are handled without a new screen).
+enum SmbOpenAction {
+    case folder(path: String)
+    case video
+    case images(items: [ImageItem], index: Int)
+    case audio
+    case none
+}
+
+/// One place that knows how to open any SMB entry, so the Mạng and Yêu thích screens behave the same.
+enum SmbOpener {
+    @MainActor
+    static func open(_ entry: SmbEntry, siblings: [SmbEntry], host: String, label: String) -> SmbOpenAction {
+        func source(_ e: SmbEntry) -> String { "smb://\(host)/\(e.path)" }
+        switch entry.kind {
+        case .folder:
+            return .folder(path: entry.path)
+        case .video:
+            let videos = siblings.filter { $0.kind == .video }
+            let items = videos.map { VideoItem(name: $0.name, source: source($0), sizeBytes: $0.sizeBytes, lastModified: $0.lastModified) }
+            PlaybackQueue.shared.start(items, index: videos.firstIndex(of: entry) ?? 0, label: label)
+            return .video
+        case .image:
+            let images = siblings.filter { $0.kind == .image }
+            let items = images.map { ImageItem(name: $0.name, source: source($0), sizeBytes: $0.sizeBytes, lastModified: $0.lastModified) }
+            return .images(items: items, index: images.firstIndex(of: entry) ?? 0)
+        case .audio:
+            let songs = siblings.filter { $0.kind == .audio }
+            let items = songs.map {
+                AudioItem(name: $0.name, title: ($0.name as NSString).deletingPathExtension, artist: "", album: "",
+                          source: source($0), sizeBytes: $0.sizeBytes, lastModified: $0.lastModified)
+            }
+            MusicQueue.shared.start(items, index: songs.firstIndex(of: entry) ?? 0, label: label)
+            MusicPlayer.shared.playCurrent()
+            return .audio
+        case .other:
+            return .none
+        }
+    }
+}
+
+/// The leading thumbnail for any SMB entry, sized for a list row (`size` = row height).
+struct SmbEntryThumbnail: View {
+    let entry: SmbEntry
+    let host: String
+    let size: CGFloat
+
+    var body: some View {
+        switch entry.kind {
+        case .folder: FolderThumbnailView(size: size)
+        case .video: VideoThumbnailView(source: "smb://\(host)/\(entry.path)", size: size)
+        case .image: SmbImageThumbnailView(host: host, path: entry.path, width: size * 16 / 9, height: size)
+        case .audio: MusicThumbnailView(size: size)
+        case .other:
+            ZStack {
+                RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.1))
+                Image(systemName: "doc").foregroundStyle(.secondary)
+            }
+            .frame(width: size, height: size)
+        }
+    }
+}
+
+/// Thumbnail of a picture on an SMB share (cached by `ThumbnailService`).
+struct SmbImageThumbnailView: View {
+    let host: String
+    let path: String
+    let width: CGFloat
+    let height: CGFloat
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                Image(systemName: "photo").foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .task(id: path) {
+            image = await ThumbnailService.shared.smbImageThumbnail(source: "smb://\(host)/\(path)", host: host, path: path)
+        }
+    }
+}
+
+/// The folder listing (list or grid, per `LibrarySettings`) used by both the Mạng tab and a Yêu thích folder.
+struct SmbFolderContent: View {
+    let host: String
+    let entries: [SmbEntry]
+    let onOpen: (SmbEntry) -> Void
+    var onAddToPlaylist: ((SmbEntry) -> Void)?
+    @ObservedObject private var librarySettings = LibrarySettings.shared
+
+    var body: some View {
+        if librarySettings.viewMode == .grid {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 8)], spacing: 12) {
+                    ForEach(entries) { entry in
+                        Button { onOpen(entry) } label: { gridCell(entry) }
+                            .buttonStyle(.plain)
+                            .disabled(entry.kind == .other)
+                            .contextMenu { menu(entry) }
+                    }
+                }
+                .padding(12)
+            }
+        } else {
+            List(entries) { entry in
+                Button { onOpen(entry) } label: {
+                    HStack(spacing: 12) {
+                        SmbEntryThumbnail(entry: entry, host: host, size: librarySettings.thumbnailSize.rowHeight)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.name).lineLimit(2).foregroundStyle(entry.kind == .other ? .secondary : .primary)
+                            if !entry.isDirectory {
+                                Text(ByteCountFormatter.string(fromByteCount: entry.sizeBytes, countStyle: .file))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .disabled(entry.kind == .other)
+                .contextMenu { menu(entry) }
+            }
+            .listStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private func gridCell(_ entry: SmbEntry) -> some View {
+        let width = librarySettings.thumbnailSize.gridCell
+        VStack(alignment: .leading, spacing: 4) {
+            switch entry.kind {
+            case .folder: FolderThumbnailView(size: width * 9 / 16).frame(width: width)
+            case .video: VideoThumbnailView(source: "smb://\(host)/\(entry.path)", size: width * 9 / 16)
+            case .image: SmbImageThumbnailView(host: host, path: entry.path, width: width, height: width * 9 / 16)
+            case .audio, .other: SmbEntryThumbnail(entry: entry, host: host, size: width * 9 / 16).frame(width: width)
+            }
+            Text(entry.name).font(.caption2).lineLimit(2).multilineTextAlignment(.leading)
+        }
+        .frame(width: width, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func menu(_ entry: SmbEntry) -> some View {
+        if entry.kind == .video, let onAddToPlaylist {
+            Button { onAddToPlaylist(entry) } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
+        }
+    }
+}
+
+/// A picture viewer to present over an SMB folder.
+struct ImageViewerTarget: Identifiable {
+    let id = UUID()
+    let items: [ImageItem]
+    let index: Int
+}
+
+/// Full-resolution bytes of an SMB picture for the viewer / thumbnails. AMSMB2 first; if that fails (logged, so the
+/// real error shows up in the diagnostics log) libVLC renders the picture instead over its own SMB2 module — the
+/// route that is known to work against the user's server.
+enum SmbImageLoader {
+    private static let amsmb2Broken = HostFlags()
+
+    /// `ImageViewerScreen`'s data provider for SMB pictures.
+    static func viewerData(_ item: ImageItem) async -> Data? {
+        guard let (host, path) = SmbUri.parse(item.source) else { return nil }
+        return await data(host: host, path: path, fallbackWidth: 2560)
+    }
+
+    static func data(host: String, path: String, fallbackWidth: CGFloat) async -> Data? {
+        if !amsmb2Broken.contains(host), let connection = await SmbRegistry.shared.getOrReconnect(host) {
+            let result = await withTimeout(seconds: 12) { () -> Data in
+                let size = try await connection.fileSize(path: path)
+                guard size > 0, size < 80_000_000 else { throw SmbError(message: "kích thước \(size)") }
+                return try await connection.readRange(path: path, offset: 0, count: Int(size))
+            }
+            switch result {
+            case .success(let data):
+                return data
+            case .failure(let error):
+                PlaybackDiagnostics.append("image: AMSMB2 read failed for \(path): \(error.localizedDescription) — using VLC")
+                amsmb2Broken.insert(host)
+            }
+        }
+        let login = await SmbRegistry.shared.login(for: host)
+        guard let cgImage = await ThumbnailService.vlcSnapshot(host: host, path: path, login: login, width: fallbackWidth, position: 0) else {
+            PlaybackDiagnostics.append("image: VLC could not render \(path) either")
+            return nil
+        }
+        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.9)
+    }
+
+    /// Returns whichever comes first: `body`'s result or a timeout. Deliberately unstructured — AMSMB2 calls do not
+    /// observe cancellation, and a task group would wait for the slow call anyway before returning.
+    private static func withTimeout<T: Sendable>(seconds: Double, _ body: @escaping @Sendable () async throws -> T) async -> Result<T, Error> {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Result<T, Error>, Never>) in
+            let once = OnceFlag()
+            Task {
+                let result: Result<T, Error>
+                do { result = .success(try await body()) } catch { result = .failure(error) }
+                if once.claim() { continuation.resume(returning: result) }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                if once.claim() { continuation.resume(returning: .failure(SmbError(message: "quá \(Int(seconds))s không đọc xong"))) }
+            }
+        }
+    }
+}
+
+/// True for exactly one caller.
+final class OnceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+}
+
+/// Thread-safe set of host names.
+final class HostFlags: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hosts: Set<String> = []
+    func contains(_ host: String) -> Bool { lock.lock(); defer { lock.unlock() }; return hosts.contains(host.lowercased()) }
+    func insert(_ host: String) { lock.lock(); hosts.insert(host.lowercased()); lock.unlock() }
+}

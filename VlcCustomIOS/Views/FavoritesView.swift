@@ -66,7 +66,7 @@ private struct FavoriteFolderBrowser: View {
     @State private var status: String?
     @State private var loading = true
     @State private var playing: SmbEntry?
-    @ObservedObject private var librarySettings = LibrarySettings.shared
+    @State private var viewer: ImageViewerTarget?
 
     var body: some View {
         NavigationStack {
@@ -76,39 +76,9 @@ private struct FavoriteFolderBrowser: View {
                 } else if let status {
                     ContentUnavailableFallback(title: "Không kết nối được", message: status)
                 } else if entries.isEmpty {
-                    ContentUnavailableFallback(title: "Trống", message: "Thư mục này không có thư mục con hay video nào.")
-                } else if librarySettings.viewMode == .grid {
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 8)], spacing: 12) {
-                            ForEach(entries) { entry in
-                                Button { open(entry) } label: {
-                                    if entry.isDirectory {
-                                        FolderGridCell(name: entry.name, cellWidth: librarySettings.thumbnailSize.gridCell)
-                                    } else if let connection {
-                                        VideoGridCell(source: "smb://\(connection.host)/\(entry.path)", name: entry.name, cellWidth: librarySettings.thumbnailSize.gridCell)
-                                    }
-                                }
-                                .disabled(!entry.isDirectory && !entry.isVideo)
-                            }
-                        }
-                        .padding(12)
-                    }
-                } else {
-                    List(entries) { entry in
-                        Button { open(entry) } label: {
-                            HStack(spacing: 12) {
-                                if entry.isDirectory {
-                                    FolderThumbnailView(size: librarySettings.thumbnailSize.rowHeight)
-                                } else if let connection {
-                                    VideoThumbnailView(source: "smb://\(connection.host)/\(entry.path)", size: librarySettings.thumbnailSize.rowHeight)
-                                }
-                                Text(entry.name).lineLimit(1)
-                            }
-                            .padding(.vertical, 4)
-                        }
-                        .disabled(!entry.isDirectory && !entry.isVideo)
-                    }
-                    .listStyle(.plain)
+                    ContentUnavailableFallback(title: "Trống", message: "Thư mục này trống.")
+                } else if let connection {
+                    SmbFolderContent(host: connection.host, entries: entries, onOpen: open)
                 }
             }
             .navigationTitle(favorite.title)
@@ -118,6 +88,9 @@ private struct FavoriteFolderBrowser: View {
             }
             .fullScreenCover(item: $playing) { _ in
                 PlayerScreen(onClose: { playing = nil })
+            }
+            .fullScreenCover(item: $viewer) { target in
+                ImageViewerScreen(items: target.items, startIndex: target.index, dataProvider: SmbImageLoader.viewerData, onClose: { viewer = nil })
             }
             .task { await connectAndLoad() }
         }
@@ -137,19 +110,20 @@ private struct FavoriteFolderBrowser: View {
     }
 
     private func open(_ entry: SmbEntry) {
-        if entry.isDirectory {
+        guard let connection else { return }
+        switch SmbOpener.open(entry, siblings: entries, host: connection.host, label: favorite.title) {
+        case .folder(let path):
             Task {
                 loading = true
-                entries = (try? await connection?.list(path: entry.path)) ?? []
+                entries = (try? await connection.list(path: path)) ?? []
                 loading = false
             }
-            return
+        case .video:
+            playing = entry
+        case .images(let items, let index):
+            viewer = ImageViewerTarget(items: items, index: index)
+        case .audio, .none:
+            break
         }
-        guard entry.isVideo, let connection else { return }
-        let videos = entries.filter(\.isVideo)
-        let items = videos.map { VideoItem(name: $0.name, source: "smb://\(connection.host)/\($0.path)", sizeBytes: $0.sizeBytes, lastModified: $0.lastModified) }
-        let index = videos.firstIndex(of: entry) ?? 0
-        PlaybackQueue.shared.start(items, index: index, label: favorite.title)
-        playing = entry
     }
 }

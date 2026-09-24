@@ -170,9 +170,8 @@ private struct SmbImageBrowser: View {
     }
 
     private func fetchFullImage(_ item: ImageItem) async -> Data? {
-        guard let (host, path) = SmbUri.parse(item.source), let connection = await SmbRegistry.shared.get(host) else { return nil }
-        guard let size = try? await connection.fileSize(path: path), size > 0, size < 60_000_000 else { return nil }
-        return try? await connection.readRange(path: path, offset: 0, count: Int(size))
+        guard let (host, path) = SmbUri.parse(item.source) else { return nil }
+        return await SmbImageLoader.data(host: host, path: path, fallbackWidth: 2560)
     }
 
     private var connectForm: some View {
@@ -265,9 +264,7 @@ private struct SmbImageBrowser: View {
 
     private func fetchThumbnailData(_ entry: SmbEntry) async -> Data? {
         guard let connection else { return nil }
-        let size = min(entry.sizeBytes, 8_000_000)
-        guard size > 0 else { return nil }
-        return try? await connection.readRange(path: entry.path, offset: 0, count: Int(size))
+        return await SmbImageLoader.data(host: connection.host, path: entry.path, fallbackWidth: 480)
     }
 
     private func connect() {
@@ -448,10 +445,12 @@ private struct ZoomableImage: View {
             }
         }
         .task {
+            // Downsampled to about screen size: a full-size decode of a big photo is ~200MB, and the pager keeps
+            // neighbours loaded too.
             if let data = await dataProvider(item) {
-                image = UIImage(data: data)
-            } else if let url = URL(string: item.source) {
-                image = (try? Data(contentsOf: url)).flatMap { UIImage(data: $0) }
+                image = ThumbnailService.downsample(data, maxDimension: 2560)
+            } else if let url = URL(string: item.source), let data = try? Data(contentsOf: url) {
+                image = ThumbnailService.downsample(data, maxDimension: 2560)
             }
         }
     }

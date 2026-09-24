@@ -22,8 +22,10 @@ struct VideoThumbnailView: View {
         .frame(width: size * 16 / 9, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .task(id: source) {
-            image = nil
-            guard !activity.isBusy else { return }
+            image = await ThumbnailService.shared.cachedThumbnail(source: source)
+            // While a video is streaming, only show thumbnails that already exist — generating one is another SMB
+            // session + decoder competing with playback.
+            guard image == nil, !activity.isBusy else { return }
             if let (host, path) = SmbUri.parse(source) {
                 image = await ThumbnailService.shared.smbVideoThumbnail(source: source, host: host, path: path)
             } else {

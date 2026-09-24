@@ -3,6 +3,7 @@ import AVFoundation
 import UIKit
 import CryptoKit
 import MobileVLCKit
+import ImageIO
 
 /// Generates and caches thumbnails for videos (a frame a few seconds in, via AVFoundation) and pictures (a downsized
 /// copy), for both local files and SMB files (played through the same loopback `SmbHttpProxy` URL used for
@@ -17,7 +18,9 @@ actor ThumbnailService {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         diskDirectory = caches.appendingPathComponent("thumbnails", isDirectory: true)
         try? FileManager.default.createDirectory(at: diskDirectory, withIntermediateDirectories: true)
-        memoryCache.countLimit = 300
+        // Bounded by bytes, not just count: 300 decoded 480px thumbnails alone could take >100MB, on top of libVLC.
+        memoryCache.countLimit = 200
+        memoryCache.totalCostLimit = 40 * 1024 * 1024
     }
 
     private func cacheKey(_ source: String) -> String {
@@ -35,7 +38,7 @@ actor ThumbnailService {
         let key = cacheKey(source)
         if let cached = memoryCache.object(forKey: key as NSString) { return cached }
         if let onDisk = loadFromDisk(key) {
-            memoryCache.setObject(onDisk, forKey: key as NSString)
+            remember(onDisk, key: key)
             return onDisk
         }
 
@@ -55,44 +58,62 @@ actor ThumbnailService {
         let time = CMTime(seconds: 3, preferredTimescale: 600)
         guard let cgImage = try? await generator.image(at: time).image else { return nil }
         let image = UIImage(cgImage: cgImage)
-        memoryCache.setObject(image, forKey: key as NSString)
+        remember(image, key: key)
         saveToDisk(image, key: key)
         return image
     }
 
-    /// Thumbnail for an SMB video, taken by libVLC itself (`VLCMediaThumbnailer`) over its own SMB2 module — works
-    /// for every format VLC plays (MKV, AVI, HEVC...), unlike AVFoundation. Falls back to AVFoundation through the
-    /// proxy (MP4/MOV only) if VLC could not produce a frame. At most two run at once: each one is its own SMB
-    /// session to the server, and a folder full of rows would otherwise open dozens together.
-    func smbVideoThumbnail(source: String, host: String, path: String) async -> UIImage? {
+    /// Already-made thumbnail for `source` (memory or disk), without generating anything — for places that must not
+    /// start SMB work, like the file list inside the player while a video is streaming.
+    func cachedThumbnail(source: String) -> UIImage? {
         let key = cacheKey(source)
         if let cached = memoryCache.object(forKey: key as NSString) { return cached }
         if let onDisk = loadFromDisk(key) {
-            memoryCache.setObject(onDisk, forKey: key as NSString)
+            remember(onDisk, key: key)
             return onDisk
         }
+        return nil
+    }
 
+    /// Thumbnail for an SMB video, taken by libVLC itself (`VLCMediaThumbnailer`) over its own SMB2 module — works
+    /// for every format VLC plays (MKV, AVI, HEVC...). One at a time: each is its own SMB session plus a decoder.
+    func smbVideoThumbnail(source: String, host: String, path: String) async -> UIImage? {
+        if let cached = cachedThumbnail(source: source) { return cached }
         await acquireSmbSlot()
         defer { releaseSmbSlot() }
         if Task.isCancelled { return nil }
+        if let cached = cachedThumbnail(source: source) { return cached }
 
         let login = await SmbRegistry.shared.login(for: host)
-        if let cgImage = await Self.vlcThumbnail(host: host, path: path, login: login) {
-            let image = UIImage(cgImage: cgImage)
-            memoryCache.setObject(image, forKey: key as NSString)
-            saveToDisk(image, key: key)
-            return image
+        guard let cgImage = await Self.vlcSnapshot(host: host, path: path, login: login, width: 480, position: 0.1) else {
+            PlaybackDiagnostics.append("thumb: VLC gave no frame for \(path)")
+            return nil
         }
-        PlaybackDiagnostics.append("thumb: VLC gave no frame for \(path), trying AVFoundation via proxy")
-        let remote = try? SmbHttpProxy.shared.url(host: host, path: path)
-        return await videoThumbnail(source: source, remoteURL: remote)
+        let image = UIImage(cgImage: cgImage)
+        let key = cacheKey(source)
+        remember(image, key: key)
+        saveToDisk(image, key: key)
+        return image
+    }
+
+    /// Thumbnail for a picture on an SMB share (bytes via `SmbImageLoader`, downsampled without decoding the full
+    /// picture).
+    func smbImageThumbnail(source: String, host: String, path: String) async -> UIImage? {
+        if let cached = cachedThumbnail(source: source) { return cached }
+        await acquireSmbSlot()
+        defer { releaseSmbSlot() }
+        if Task.isCancelled { return nil }
+        if let cached = cachedThumbnail(source: source) { return cached }
+        guard let data = await SmbImageLoader.data(host: host, path: path, fallbackWidth: 480) else { return nil }
+        return await imageThumbnail(source: source, data: data)
     }
 
     private var smbActive = 0
     private var smbWaiters: [CheckedContinuation<Void, Never>] = []
+    private static let maxSmbJobs = 1
 
     private func acquireSmbSlot() async {
-        if smbActive < 2 { smbActive += 1; return }
+        if smbActive < Self.maxSmbJobs { smbActive += 1; return }
         await withCheckedContinuation { smbWaiters.append($0) } // the releasing caller hands its slot over
     }
 
@@ -100,21 +121,17 @@ actor ThumbnailService {
         if smbWaiters.isEmpty { smbActive -= 1 } else { smbWaiters.removeFirst().resume() }
     }
 
+    /// One frame of an SMB file rendered by libVLC, `width` px wide, at `position` (0...1) of its duration.
     @MainActor
-    private static func vlcThumbnail(host: String, path: String, login: SmbPlayback.Login?) async -> CGImage? {
+    static func vlcSnapshot(host: String, path: String, login: SmbPlayback.Login?, width: CGFloat, position: Float) async -> CGImage? {
         guard let media = SmbPlayback.media(host: host, path: path, route: .direct, login: login) else { return nil }
-        let delegate = ThumbnailerDelegate()
-        let image: CGImage? = await withCheckedContinuation { continuation in
-            delegate.continuation = continuation
-            let thumbnailer = VLCMediaThumbnailer(media: media, andDelegate: delegate)
-            thumbnailer.thumbnailWidth = 480
-            thumbnailer.snapshotPosition = 0.1
-            delegate.thumbnailer = thumbnailer
-            thumbnailer.fetchThumbnail()
-            // Belt and braces on top of VLCKit's own timeout: never leave a row waiting forever.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { delegate.finish(nil) }
+        return await withCheckedContinuation { continuation in
+            let job = ThumbnailJob(continuation: continuation)
+            let thumbnailer = VLCMediaThumbnailer(media: media, andDelegate: job)
+            thumbnailer.thumbnailWidth = width
+            thumbnailer.snapshotPosition = position
+            job.start(thumbnailer)
         }
-        return withExtendedLifetime(delegate) { image }
     }
 
     /// Downsized thumbnail for a picture at `source`; `data` is provided directly for SMB images (fetched by the
@@ -123,7 +140,7 @@ actor ThumbnailService {
         let key = cacheKey(source)
         if let cached = memoryCache.object(forKey: key as NSString) { return cached }
         if let onDisk = loadFromDisk(key) {
-            memoryCache.setObject(onDisk, forKey: key as NSString)
+            remember(onDisk, key: key)
             return onDisk
         }
 
@@ -135,11 +152,29 @@ actor ThumbnailService {
         } else {
             sourceData = nil
         }
-        guard let sourceData, let original = UIImage(data: sourceData) else { return nil }
-        let thumbnail = original.resized(maxDimension: 480)
-        memoryCache.setObject(thumbnail, forKey: key as NSString)
+        guard let sourceData, let thumbnail = Self.downsample(sourceData, maxDimension: 480) else { return nil }
+        remember(thumbnail, key: key)
         saveToDisk(thumbnail, key: key)
         return thumbnail
+    }
+
+    /// ImageIO thumbnail straight from the encoded bytes — never materializes the full-size bitmap (a 48MP photo is
+    /// ~190MB decoded; a few at once got the app killed by iOS).
+    static func downsample(_ data: Data, maxDimension: CGFloat) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxDimension,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+
+    private func remember(_ image: UIImage, key: String) {
+        let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+        memoryCache.setObject(image, forKey: key as NSString, cost: cost)
     }
 
     private func loadFromDisk(_ key: String) -> UIImage? {
@@ -166,25 +201,47 @@ private extension UIImage {
     }
 }
 
-/// Bridges `VLCMediaThumbnailer`'s delegate callbacks to a continuation (resumed exactly once).
-private final class ThumbnailerDelegate: NSObject, VLCMediaThumbnailerDelegate {
-    var continuation: CheckedContinuation<CGImage?, Never>?
-    var thumbnailer: VLCMediaThumbnailer?
+/// One `VLCMediaThumbnailer` run. Keeps itself (and the thumbnailer) alive in `inFlight` until libVLC calls back —
+/// releasing a thumbnailer while libVLC is still working on it crashes — while the waiting caller is released after
+/// at most 20s regardless.
+private final class ThumbnailJob: NSObject, VLCMediaThumbnailerDelegate {
+    private static var inFlight = Set<ThumbnailJob>()
+
+    private var continuation: CheckedContinuation<CGImage?, Never>?
+    private var thumbnailer: VLCMediaThumbnailer?
+
+    init(continuation: CheckedContinuation<CGImage?, Never>) {
+        self.continuation = continuation
+    }
+
+    func start(_ thumbnailer: VLCMediaThumbnailer) {
+        self.thumbnailer = thumbnailer
+        Self.inFlight.insert(self)
+        thumbnailer.fetchThumbnail()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.resume(nil) }
+        // Hard cleanup if libVLC never calls back at all.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in self?.done() }
+    }
 
     func mediaThumbnailerDidTimeOut(_ mediaThumbnailer: VLCMediaThumbnailer) {
-        finish(nil)
+        DispatchQueue.main.async { self.resume(nil); self.done() }
     }
 
     func mediaThumbnailer(_ mediaThumbnailer: VLCMediaThumbnailer, didFinishThumbnail thumbnail: CGImage) {
-        finish(thumbnail)
+        DispatchQueue.main.async { self.resume(thumbnail); self.done() }
     }
 
-    func finish(_ image: CGImage?) {
+    private func resume(_ image: CGImage?) {
+        guard let continuation else { return }
+        self.continuation = nil
+        continuation.resume(returning: image)
+    }
+
+    private func done() {
+        // Let go on the next turn, not from inside libVLC's own callback.
         DispatchQueue.main.async {
-            guard let continuation = self.continuation else { return }
-            self.continuation = nil
             self.thumbnailer = nil
-            continuation.resume(returning: image)
+            Self.inFlight.remove(self)
         }
     }
 }

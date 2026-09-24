@@ -10,20 +10,14 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            LocalLibraryView()
-                .tabItem { Label("Video", systemImage: "internaldrive") }.tag(0)
-            SmbBrowserView()
-                .tabItem { Label("Mạng (SMB)", systemImage: "network") }.tag(1)
-            MusicLibraryView()
-                .tabItem { Label("Nhạc", systemImage: "music.note") }.tag(2)
-            ImagesLibraryView()
-                .tabItem { Label("Ảnh", systemImage: "photo.on.rectangle") }.tag(3)
-            PlaylistsView()
-                .tabItem { Label("Playlist", systemImage: "list.bullet") }.tag(4)
+            // Only the three screens used day to day stay in the tab bar; the Video/Nhạc/Ảnh/Playlist libraries
+            // live inside Cài đặt → Thư viện.
             FavoritesView()
-                .tabItem { Label("Yêu thích", systemImage: "star") }.tag(5)
+                .tabItem { Label("Yêu thích", systemImage: "star") }.tag(0)
+            SmbBrowserView()
+                .tabItem { Label("Mạng", systemImage: "network") }.tag(1)
             SettingsView()
-                .tabItem { Label("Cài đặt", systemImage: "gearshape") }.tag(6)
+                .tabItem { Label("Cài đặt", systemImage: "gearshape") }.tag(2)
         }
         .safeAreaInset(edge: .bottom) {
             if musicQueue.current != nil {
@@ -56,15 +50,46 @@ struct ContentView: View {
     }
 
     private static func initialTab() -> Int {
-        guard let raw = ProcessInfo.processInfo.environment["DEMO_TAB"], let value = Int(raw) else { return 0 }
+        guard let raw = ProcessInfo.processInfo.environment["DEMO_TAB"], let value = Int(raw) else { return 1 }
         return value
     }
 }
 
+/// The libraries that used to be their own tabs, opened from Cài đặt → Thư viện.
+private enum LibraryScreen: String, Identifiable, CaseIterable {
+    case video, music, images, playlists
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .video: "Video trên máy"
+        case .music: "Nhạc"
+        case .images: "Ảnh"
+        case .playlists: "Playlist"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .video: "film"
+        case .music: "music.note"
+        case .images: "photo.on.rectangle"
+        case .playlists: "list.bullet"
+        }
+    }
+}
+
 struct SettingsView: View {
+    @State private var library: LibraryScreen?
+
     var body: some View {
         NavigationStack {
             List {
+                Section("Thư viện") {
+                    ForEach(LibraryScreen.allCases) { screen in
+                        Button { library = screen } label: {
+                            Label(screen.title, systemImage: screen.icon)
+                        }
+                    }
+                }
                 Section {
                     Text("Video (trên máy + SMB), Nhạc (phát nền, điều khiển ở màn hình khóa), Ảnh (xem có zoom, trình chiếu), " +
                          "Playlist, Yêu thích (thư mục SMB), thumbnail cho video/ảnh, tìm kiếm & sắp xếp, và trong trình phát: " +
@@ -94,6 +119,14 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("VLCcustom cho iOS")
+            .sheet(item: $library) { screen in
+                switch screen {
+                case .video: LocalLibraryView()
+                case .music: MusicLibraryView()
+                case .images: ImagesLibraryView()
+                case .playlists: PlaylistsView()
+                }
+            }
         }
     }
 }

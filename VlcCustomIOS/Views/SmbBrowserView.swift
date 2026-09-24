@@ -15,6 +15,7 @@ struct SmbBrowserView: View {
     @State private var connecting = false
     @State private var loading = false
     @State private var playing: SmbEntry?
+    @State private var viewer: ImageViewerTarget?
     @State private var query = ""
     @State private var sort: MediaSort = .nameAsc
     @State private var addingToPlaylist: SmbEntry?
@@ -56,6 +57,9 @@ struct SmbBrowserView: View {
             }
             .fullScreenCover(item: $playing) { _ in
                 PlayerScreen(onClose: { playing = nil })
+            }
+            .fullScreenCover(item: $viewer) { target in
+                ImageViewerScreen(items: target.items, startIndex: target.index, dataProvider: SmbImageLoader.viewerData, onClose: { viewer = nil })
             }
             .confirmationDialog("Thêm vào playlist", isPresented: Binding(get: { addingToPlaylist != nil }, set: { if !$0 { addingToPlaylist = nil } }), titleVisibility: .visible) {
                 ForEach(playlists) { playlist in
@@ -129,57 +133,9 @@ struct SmbBrowserView: View {
         if loading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).padding(.top, 48)
         } else if connection != nil && entries.isEmpty {
-            ContentUnavailableFallback(title: "Trống", message: "Thư mục này không có thư mục con hay video nào.")
-        } else if librarySettings.viewMode == .grid {
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: librarySettings.thumbnailSize.gridCell), spacing: 8)], spacing: 12) {
-                    ForEach(displayedEntries) { entry in
-                        Button { open(entry) } label: {
-                            if entry.isDirectory {
-                                FolderGridCell(name: entry.name, cellWidth: librarySettings.thumbnailSize.gridCell)
-                            } else if let connection {
-                                VideoGridCell(source: "smb://\(connection.host)/\(entry.path)", name: entry.name, cellWidth: librarySettings.thumbnailSize.gridCell)
-                            }
-                        }
-                        .disabled(!entry.isDirectory && !entry.isVideo)
-                        .contextMenu {
-                            if entry.isVideo {
-                                Button { addingToPlaylist = entry } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
-                            }
-                        }
-                    }
-                }
-                .padding(12)
-            }
-        } else {
-            List(displayedEntries) { entry in
-                Button {
-                    open(entry)
-                } label: {
-                    HStack(spacing: 12) {
-                        if entry.isDirectory {
-                            FolderThumbnailView(size: librarySettings.thumbnailSize.rowHeight)
-                        } else if let connection {
-                            VideoThumbnailView(source: "smb://\(connection.host)/\(entry.path)", size: librarySettings.thumbnailSize.rowHeight)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.name).lineLimit(1)
-                            if !entry.isDirectory {
-                                Text(ByteCountFormatter.string(fromByteCount: entry.sizeBytes, countStyle: .file))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-                .disabled(!entry.isDirectory && !entry.isVideo)
-                .contextMenu {
-                    if entry.isVideo {
-                        Button { addingToPlaylist = entry } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
-                    }
-                }
-            }
-            .listStyle(.plain)
+            ContentUnavailableFallback(title: "Trống", message: "Thư mục này trống.")
+        } else if let connection {
+            SmbFolderContent(host: connection.host, entries: displayedEntries, onOpen: open, onAddToPlaylist: { addingToPlaylist = $0 })
         }
     }
 
@@ -219,17 +175,18 @@ struct SmbBrowserView: View {
     }
 
     private func open(_ entry: SmbEntry) {
-        if entry.isDirectory {
-            path = entry.path
+        guard let connection else { return }
+        switch SmbOpener.open(entry, siblings: displayedEntries, host: connection.host, label: "SMB: \(connection.host)/\(path)") {
+        case .folder(let newPath):
+            path = newPath
             Task { await load() }
-            return
+        case .video:
+            playing = entry
+        case .images(let items, let index):
+            viewer = ImageViewerTarget(items: items, index: index)
+        case .audio, .none:
+            break
         }
-        guard entry.isVideo, let connection else { return }
-        let videos = displayedEntries.filter(\.isVideo)
-        let items = videos.map { VideoItem(name: $0.name, source: "smb://\(connection.host)/\($0.path)", sizeBytes: $0.sizeBytes, lastModified: $0.lastModified) }
-        let index = videos.firstIndex(of: entry) ?? 0
-        PlaybackQueue.shared.start(items, index: index, label: "SMB: \(connection.host)/\(path)")
-        playing = entry
     }
 
     private func goUp() {
