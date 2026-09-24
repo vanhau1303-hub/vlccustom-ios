@@ -17,7 +17,8 @@ struct SmbBrowserView: View {
     @State private var playing: SmbEntry?
     @State private var viewer: ImageViewerTarget?
     @State private var query = ""
-    @State private var sort: MediaSort = .nameAsc
+    /// Shared with Yêu thích folders and remembered across launches.
+    @AppStorage("smb_sort") private var sort: MediaSort = .nameAsc
     @State private var addingToPlaylist: SmbEntry?
     @State private var playlists: [Playlist] = []
     @ObservedObject private var librarySettings = LibrarySettings.shared

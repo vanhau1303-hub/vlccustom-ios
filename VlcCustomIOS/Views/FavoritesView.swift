@@ -64,6 +64,9 @@ private struct FavoriteFolderBrowser: View {
     @Environment(\.dismiss) private var dismiss
     @State private var connection: SmbConnection?
     @State private var entries: [SmbEntry] = []
+    /// Same sort choice as the Mạng tab (shared, remembered).
+    @AppStorage("smb_sort") private var sort: MediaSort = .nameAsc
+    @State private var query = ""
     @State private var status: String?
     @State private var loading = true
     @State private var playing: SmbEntry?
@@ -81,13 +84,14 @@ private struct FavoriteFolderBrowser: View {
                 } else if entries.isEmpty {
                     ContentUnavailableFallback(title: "Trống", message: "Thư mục này trống.")
                 } else if let connection {
-                    SmbFolderContent(host: connection.host, entries: entries, onOpen: open)
+                    SmbFolderContent(host: connection.host, entries: displayedEntries, onOpen: open)
                 }
             }
             // Swipe in from the left edge: up one folder, or close from the starred folder itself.
             .edgeSwipeBack { pathStack.isEmpty ? dismiss() : goUp() }
             .navigationTitle(pathStack.last.map { ($0 as NSString).lastPathComponent } ?? favorite.title)
             .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $query)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     if !pathStack.isEmpty {
@@ -95,6 +99,7 @@ private struct FavoriteFolderBrowser: View {
                     }
                 }
                 ToolbarItem(placement: .primaryAction) { ThumbnailSizeMenu() }
+                ToolbarItem(placement: .primaryAction) { SortMenu(sort: $sort) }
                 ToolbarItem(placement: .confirmationAction) { Button("Đóng") { dismiss() } }
             }
             .fullScreenCover(item: $playing) { _ in
@@ -120,6 +125,12 @@ private struct FavoriteFolderBrowser: View {
         loading = false
     }
 
+    /// Folders first, then files — the chosen sort applies within each group, exactly like the Mạng tab.
+    private var displayedEntries: [SmbEntry] {
+        let base = query.isEmpty ? entries : entries.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        return sort.apply(base.filter(\.isDirectory)) + sort.apply(base.filter { !$0.isDirectory })
+    }
+
     private func goUp() {
         pathStack.removeLast()
         show(pathStack.last ?? favorite.path)
@@ -136,7 +147,7 @@ private struct FavoriteFolderBrowser: View {
 
     private func open(_ entry: SmbEntry) {
         guard let connection else { return }
-        switch SmbOpener.open(entry, siblings: entries, host: connection.host, label: favorite.title) {
+        switch SmbOpener.open(entry, siblings: displayedEntries, host: connection.host, label: favorite.title) {
         case .folder(let path):
             pathStack.append(path)
             show(path)
