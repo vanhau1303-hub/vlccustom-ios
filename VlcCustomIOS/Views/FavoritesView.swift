@@ -83,6 +83,8 @@ private struct FavoriteFolderBrowser: View {
                     SmbFolderContent(host: connection.host, entries: entries, onOpen: open)
                 }
             }
+            // Swipe in from the left edge: up one folder, or close from the starred folder itself.
+            .edgeSwipeBack { pathStack.isEmpty ? dismiss() : goUp() }
             .navigationTitle(pathStack.last.map { ($0 as NSString).lastPathComponent } ?? favorite.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -56,6 +56,8 @@ struct SmbBrowserView: View {
             // Pinned to the top — a VStack in a NavigationStack is otherwise centred vertically, which left the
             // connect form floating mid-screen.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // Swipe in from the left edge = the back button: up one folder, or off the server from the share list.
+            .edgeSwipeBack(enabled: connection != nil) { path.isEmpty ? disconnect() : goUp() }
             .dismissesKeyboardOnTap()
             .navigationTitle("Mạng")
             .navigationBarTitleDisplayMode(.inline)

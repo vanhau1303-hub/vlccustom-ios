@@ -73,6 +73,7 @@ struct MusicPlayerScreen: View {
                 Spacer()
             }
             .padding()
+            .edgeSwipeBack { onClose() }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Đóng") { onClose() } }
             }
