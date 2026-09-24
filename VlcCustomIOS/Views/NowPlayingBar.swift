@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The collapsed music player, pinned at the bottom whenever a song is loaded so music keeps playing (and stays
-/// reachable) on every screen: cover + title (tap to expand), play/pause, next, and a seek bar with elapsed/total
+/// reachable) on every screen: cover + title (tap to expand), play/pause, next, stop (closes the bar), and a seek bar with elapsed/total
 /// time — tap anywhere on it to jump there.
 struct NowPlayingBar: View {
     @ObservedObject private var queue = MusicQueue.shared
@@ -41,6 +41,11 @@ struct NowPlayingBar: View {
                     Image(systemName: "forward.fill").font(.title3).frame(width: 36, height: 40)
                 }
                 .disabled(!queue.hasNext)
+                // Stop the music entirely and dismiss the mini bar.
+                Button { player.stop() } label: {
+                    Image(systemName: "xmark").font(.body.weight(.semibold)).foregroundStyle(.secondary)
+                        .frame(width: 32, height: 40)
+                }
             }
             HStack(spacing: 8) {
                 Text(format(seeking ? Int32(seekValue * Double(player.duration)) : player.time))

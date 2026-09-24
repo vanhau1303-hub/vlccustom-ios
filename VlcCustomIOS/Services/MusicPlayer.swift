@@ -135,6 +135,9 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     }
 
     func stop() {
+        playGeneration += 1
+        artwork = nil
+        MusicUI.shared.collapse()
         mediaPlayer.stop()
         MusicQueue.shared.start([], index: 0)
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil

@@ -15,32 +15,13 @@ final class MusicUI: ObservableObject {
     /// makes its host "disappear" underneath it.
     @Published private(set) var presenter: UUID?
     @Published private(set) var topHost: UUID?
-    /// Mini bar tucked away: a paused song should not hang around at the bottom once the user moved on to pictures
-    /// or a video. Comes back as soon as music plays again or a song is picked.
-    @Published private(set) var miniBarHidden = false
     private var hosts: [UUID] = []
 
     private init() {}
 
     func expand() {
         presenter = topHost
-        miniBarHidden = false
         expanded = true
-    }
-
-    func showMiniBar() {
-        if miniBarHidden { miniBarHidden = false }
-    }
-
-    /// A video is starting: stop the music (two soundtracks at once is never wanted) and tuck the mini bar away.
-    func videoOpened() {
-        if MusicPlayer.shared.isPlaying { MusicPlayer.shared.togglePlayPause() }
-        if MusicQueue.shared.current != nil { miniBarHidden = true }
-    }
-
-    /// Pictures opened: music may keep playing behind them, but a paused song's bar goes away.
-    func picturesOpened() {
-        if MusicQueue.shared.current != nil, !MusicPlayer.shared.isPlaying { miniBarHidden = true }
     }
 
     func collapse() {
@@ -67,7 +48,7 @@ private struct MusicPlayerHost: ViewModifier {
     func body(content: Content) -> some View {
         content
             .safeAreaInset(edge: .bottom) {
-                if queue.current != nil, ui.topHost == id, !ui.miniBarHidden {
+                if queue.current != nil, ui.topHost == id {
                     NowPlayingBar(onTap: { ui.expand() })
                 }
             }
