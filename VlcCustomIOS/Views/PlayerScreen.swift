@@ -77,7 +77,7 @@ struct PlayerScreen: View {
             .padding(.bottom, showControls ? 230 : 28)
             .allowsHitTesting(false)
 
-            if live.running, let status = live.status {
+            if let status = live.running ? live.status : live.translationNote {
                 VStack {
                     HStack {
                         Text("🎙 \(status)")

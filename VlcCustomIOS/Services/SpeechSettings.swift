@@ -35,6 +35,9 @@ final class SpeechSettings: ObservableObject {
         spokenLanguage = defaults.string(forKey: Keys.spokenLanguage)
         translateTo = defaults.string(forKey: Keys.translateTo)
         dualSubtitles = defaults.bool(forKey: Keys.dualSubtitles)
-        libreTranslateServer = defaults.string(forKey: Keys.libreServer) ?? "https://libretranslate.com"
+        // Empty = Google's free endpoint. The old default (libretranslate.com) now needs a paid key, so it is
+        // treated as empty too.
+        let savedServer = defaults.string(forKey: Keys.libreServer) ?? ""
+        libreTranslateServer = savedServer.contains("libretranslate.com") ? "" : savedServer
     }
 }

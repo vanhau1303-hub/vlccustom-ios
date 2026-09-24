@@ -30,12 +30,16 @@ struct SpeechSubtitleDialog: View {
                     }
                     if settings.translateTo != nil {
                         Toggle("Hiện song ngữ (gốc + dịch)", isOn: $settings.dualSubtitles)
-                        TextField("Máy chủ dịch (LibreTranslate)", text: $settings.libreTranslateServer)
+                        TextField("Máy chủ LibreTranslate riêng (để trống = Google, miễn phí)", text: $settings.libreTranslateServer)
                             .textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
                     }
                 }
                 if let status = live.status {
                     Section { HStack { ProgressView(); Text(status).font(.footnote) } }
+                }
+                if let note = live.translationNote {
+                    Section { Label(note, systemImage: "globe").font(.footnote) }
                 }
                 if let error = live.errorMessage {
                     Section { Text(error).foregroundStyle(.red).font(.footnote) }
