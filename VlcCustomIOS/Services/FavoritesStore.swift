@@ -20,14 +20,15 @@ enum FavoritesStore {
         load().contains { $0.host == host && $0.path == path }
     }
 
-    static func toggle(host: String, path: String, title: String) {
+    static func toggle(host: String, path: String, title: String, isFile: Bool = false) {
         var favorites = load()
         if let index = favorites.firstIndex(where: { $0.host == host && $0.path == path }) {
             favorites.remove(at: index)
         } else {
-            favorites.append(FavoriteFolder(kind: .smb, host: host, path: path, title: title))
+            favorites.append(FavoriteFolder(kind: .smb, host: host, path: path, title: title, isFile: isFile))
         }
         save(favorites)
+        DispatchQueue.main.async { AppNavigator.shared.favoritesChanged() }
     }
 
     static func remove(_ id: String) {

@@ -51,6 +51,11 @@ struct FavoriteFolder: Identifiable, Codable, Hashable {
     var host: String = ""
     let path: String
     let title: String
+    /// A starred file (opens directly) rather than a folder (opens in the Mạng tab). Optional so favorites saved
+    /// before files could be starred still decode (as folders).
+    var isFile: Bool?
+
+    var isFileShortcut: Bool { isFile ?? false }
 }
 
 extension SmbEntry {

@@ -3,11 +3,11 @@ import SwiftUI
 struct ContentView: View {
     /// Lets CI's demo-screenshot workflow launch straight into a given tab (via the `DEMO_TAB` environment
     /// variable) so every screen can be screenshotted without a real device to tap through them by hand.
-    @State private var selectedTab = Self.initialTab()
+    @ObservedObject private var navigator = AppNavigator.shared
     @State private var demoPlaying = false
 
     var body: some View {
-        TabView(selection: $selectedTab) {
+        TabView(selection: $navigator.selectedTab) {
             // Only the three screens used day to day stay in the tab bar; the Video/Nhạc/Ảnh/Playlist libraries
             // live inside Cài đặt → Thư viện.
             FavoritesView()
@@ -23,7 +23,10 @@ struct ContentView: View {
                 PlayerScreen(onClose: { demoPlaying = false })
             }
         )
-        .task { await startDemoSmbPlayback() }
+        .task {
+            if let tab = Self.demoTab() { navigator.selectedTab = tab }
+            await startDemoSmbPlayback()
+        }
     }
 
     /// CI end-to-end hook: with `DEMO_SMB_HOST` / `DEMO_SMB_USER` / `DEMO_SMB_PASS` / `DEMO_SMB_FILE` ("share/path")
@@ -40,9 +43,8 @@ struct ContentView: View {
         demoPlaying = true
     }
 
-    private static func initialTab() -> Int {
-        guard let raw = ProcessInfo.processInfo.environment["DEMO_TAB"], let value = Int(raw) else { return 1 }
-        return value
+    private static func demoTab() -> Int? {
+        ProcessInfo.processInfo.environment["DEMO_TAB"].flatMap(Int.init)
     }
 }
 

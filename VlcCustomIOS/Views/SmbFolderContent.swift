@@ -170,6 +170,14 @@ struct SmbFolderContent: View {
 
     @ViewBuilder
     private func menu(_ entry: SmbEntry) -> some View {
+        if entry.kind != .other {
+            let starred = FavoritesStore.isFavorite(host: host, path: entry.path)
+            Button {
+                FavoritesStore.toggle(host: host, path: entry.path, title: entry.name, isFile: !entry.isDirectory)
+            } label: {
+                Label(starred ? "Bỏ khỏi Yêu thích" : "Thêm vào Yêu thích", systemImage: starred ? "star.slash" : "star")
+            }
+        }
         if entry.kind == .video, let onAddToPlaylist {
             Button { onAddToPlaylist(entry) } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
         }

@@ -23,6 +23,7 @@ struct SmbBrowserView: View {
     @State private var playlists: [Playlist] = []
     @ObservedObject private var librarySettings = LibrarySettings.shared
     @State private var showScan = false
+    @ObservedObject private var navigator = AppNavigator.shared
 
     var body: some View {
         NavigationStack {
@@ -83,6 +84,10 @@ struct SmbBrowserView: View {
             .task {
                 savedProfiles = SmbServerStore.load()
                 playlists = PlaylistStore.video.load()
+                if let jump = navigator.smbJump { await open(jump) }
+            }
+            .onChange(of: navigator.smbJump) { jump in
+                if let jump { Task { await open(jump) } }
             }
         }
     }
@@ -209,6 +214,30 @@ struct SmbBrowserView: View {
             }
             connecting = false
         }
+    }
+
+    /// A folder shortcut from Yêu thích: connect (reusing the live connection or the saved login) and show it here.
+    private func open(_ jump: AppNavigator.SmbJump) async {
+        navigator.smbJump = nil
+        host = jump.host
+        if let profile = SmbServerStore.load().first(where: { $0.host.lowercased() == jump.host.lowercased() }) {
+            username = profile.username
+            domain = profile.domain
+            password = SmbServerStore.password(for: profile.host)
+        }
+        connecting = true
+        status = nil
+        let conn = await SmbRegistry.shared.getOrReconnect(jump.host)
+        connecting = false
+        guard let conn else {
+            connection = nil
+            status = "Không kết nối được \(jump.host). Kiểm tra máy tính đang bật và cùng mạng Wi-Fi."
+            return
+        }
+        connection = conn
+        path = jump.path
+        query = ""
+        await load()
     }
 
     private func load() async {
