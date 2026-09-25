@@ -40,6 +40,7 @@ struct ContentView: View {
                                                    password: env["DEMO_SMB_PASS"] ?? "", domain: "")
         let item = VideoItem(name: (file as NSString).lastPathComponent, source: "smb://\(host)/\(file)",
                              sizeBytes: 0, lastModified: .distantPast)
+        SmbRoutePreferences.set(item.source, proxy: env["DEMO_SMB_ROUTE"] == "proxy")
         PlaybackQueue.shared.start([item], index: 0, label: "demo")
         demoPlaying = true
     }

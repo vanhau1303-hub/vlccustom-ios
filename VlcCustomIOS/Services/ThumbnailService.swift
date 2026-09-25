@@ -110,7 +110,20 @@ actor ThumbnailService {
         if let cached = cachedThumbnail(source: source) { return cached }
 
         let login = await SmbRegistry.shared.login(for: host)
-        guard let cgImage = await Self.vlcSnapshot(host: host, path: path, login: login, width: 640, position: 0.1) else {
+        var snapshot: CGImage?
+        if !SmbRoutePreferences.prefersProxy(source) {
+            snapshot = await Self.vlcSnapshot(host: host, path: path, login: login, width: 640, position: 0.1)
+        }
+        if snapshot == nil, !(await Self.videoIsPlaying()) {
+            // libVLC's SMB module gave nothing (or is known not to work for this file): try the AMSMB2 proxy, the
+            // way the Android app reads SMB. If that works, playback goes that way too from now on.
+            snapshot = await Self.vlcSnapshot(host: host, path: path, login: login, width: 640, position: 0.1, route: .proxy)
+            if snapshot != nil {
+                SmbRoutePreferences.set(source, proxy: true)
+                PlaybackDiagnostics.append("thumb: \(path) works via proxy — remembered for playback")
+            }
+        }
+        guard let cgImage = snapshot else {
             PlaybackDiagnostics.append("thumb: VLC gave no frame for \(path)")
             // Only remember it if nothing else was going on (a video starting mid-way can make it fail too).
             let busyNow = await Self.videoIsPlaying()
@@ -201,8 +214,9 @@ actor ThumbnailService {
 
     /// One frame of an SMB file rendered by libVLC, `width` px wide, at `position` (0...1) of its duration.
     @MainActor
-    static func vlcSnapshot(host: String, path: String, login: SmbPlayback.Login?, width: CGFloat, position: Float) async -> CGImage? {
-        guard let media = SmbPlayback.media(host: host, path: path, route: .direct, login: login) else { return nil }
+    static func vlcSnapshot(host: String, path: String, login: SmbPlayback.Login?, width: CGFloat, position: Float,
+                            route: SmbPlaybackRoute = .direct) async -> CGImage? {
+        guard let media = SmbPlayback.media(host: host, path: path, route: route, login: login) else { return nil }
         return await withCheckedContinuation { continuation in
             let job = ThumbnailJob(continuation: continuation)
             let thumbnailer = VLCMediaThumbnailer(media: media, andDelegate: job)

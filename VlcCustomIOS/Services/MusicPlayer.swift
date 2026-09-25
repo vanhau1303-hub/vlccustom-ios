@@ -86,7 +86,7 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     func playCurrent() {
         guard let item = MusicQueue.shared.current else { return }
         didReachEnd = false
-        smbRoute = .direct
+        smbRoute = SmbRoutePreferences.prefersProxy(item.source) ? .proxy : .direct
         start(item)
     }
 

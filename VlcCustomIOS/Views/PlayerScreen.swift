@@ -165,6 +165,12 @@ struct PlayerScreen: View {
                                     Label(player.deinterlaceOn ? "Tắt khử sọc" : "Bật khử sọc", systemImage: "tv")
                                 }
                                 Button { showPictureControls = true } label: { Label("Chỉnh màu", systemImage: "slider.horizontal.3") }
+                                if queue.current?.isSmb == true {
+                                    Button { player.switchRoute() } label: {
+                                        Label(player.isCompatibilityRoute ? "Phát bằng chế độ thường" : "Phát bằng chế độ tương thích",
+                                              systemImage: "arrow.triangle.2.circlepath")
+                                    }
+                                }
                             } label: {
                                 controlIcon("ellipsis")
                             }
@@ -193,7 +199,7 @@ struct PlayerScreen: View {
         .alert("Không phát được video", isPresented: $player.showError) {
             Button("Đóng", role: .cancel) {}
         } message: {
-            Text("Định dạng/codec chưa được hỗ trợ, file lỗi hoặc mất kết nối mạng (nếu là video từ SMB).")
+            Text("Đã thử cả chế độ thường và chế độ tương thích. Nhấn giữ file → Kiểm tra file để xem định dạng bên trong.")
         }
         .sheet(isPresented: $showQueue) {
             PlayQueueSheet(queue: queue) { index in
@@ -439,9 +445,25 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     func playCurrent() {
         guard let item = PlaybackQueue.shared.current else { return }
         didReachEnd = false
-        smbRoute = .direct
+        smbRoute = SmbRoutePreferences.prefersProxy(item.source) ? .proxy : .direct
+        triedOtherRoute = false
         start(item)
     }
+
+    /// "Phát bằng chế độ tương thích" / back to normal, from the player's ⋯ menu: switch route for this file,
+    /// remember it, and reopen at the current position.
+    func switchRoute() {
+        guard let item = PlaybackQueue.shared.current, item.isSmb else { return }
+        smbRoute = smbRoute == .direct ? .proxy : .direct
+        SmbRoutePreferences.set(item.source, proxy: smbRoute == .proxy)
+        triedOtherRoute = true
+        let at = time
+        VLCControl.stop(mediaPlayer)
+        start(item, resumeAtMs: at > 0 ? at : nil)
+    }
+
+    var isCompatibilityRoute: Bool { smbRoute == .proxy }
+    private var triedOtherRoute = false
 
     private func start(_ item: VideoItem, resumeAtMs: Int32? = nil) {
         fallbackWork?.cancel()
@@ -477,11 +499,14 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     /// Direct route failed → retry once through the proxy; proxy failed too → show the error.
     private func fallbackOrFail(_ item: VideoItem, reason: String) {
         PlaybackDiagnostics.append("player: \(smbRoute.rawValue) failed (\(reason))")
-        if item.isSmb && smbRoute == .direct {
-            smbRoute = .proxy
+        if item.isSmb && !triedOtherRoute {
+            triedOtherRoute = true
+            smbRoute = smbRoute == .direct ? .proxy : .direct
+            PlaybackDiagnostics.append("player: retrying via \(smbRoute.rawValue)")
             VLCControl.stop(mediaPlayer)
             start(item)
         } else {
+            isLoading = false
             showError = true
         }
     }

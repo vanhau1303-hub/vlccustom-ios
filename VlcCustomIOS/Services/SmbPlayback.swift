@@ -11,6 +11,24 @@ enum SmbPlaybackRoute: String {
     case proxy
 }
 
+/// Files that play (or give a thumbnail) through the proxy but not through libVLC's own SMB module — typically
+/// fragmented / non-interleaved MP4s, which make libVLC seek thousands of times; its SMB module cancels the
+/// in-flight read on every seek, the AMSMB2 proxy does not. Learned automatically (thumbnail fallback) or set by
+/// hand ("Phát bằng chế độ tương thích"), remembered across launches.
+enum SmbRoutePreferences {
+    private static let key = "smb_proxy_route_sources"
+
+    static func prefersProxy(_ source: String) -> Bool {
+        (UserDefaults.standard.stringArray(forKey: key) ?? []).contains(source)
+    }
+
+    static func set(_ source: String, proxy: Bool) {
+        var all = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+        if proxy { all.insert(source) } else { all.remove(source) }
+        UserDefaults.standard.set(Array(all), forKey: key)
+    }
+}
+
 enum SmbPlayback {
     struct Login {
         let username: String

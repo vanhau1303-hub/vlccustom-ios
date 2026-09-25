@@ -49,6 +49,15 @@ struct SmbEntryOptionsSheet: View {
                         FavoritesStore.toggle(host: host, path: entry.path, title: entry.name, isFile: !entry.isDirectory)
                         show(starred ? "Đã bỏ khỏi Yêu thích" : "Đã thêm vào Yêu thích")
                     }
+                    if entry.kind == .video || entry.kind == .audio {
+                        let proxy = SmbRoutePreferences.prefersProxy(source)
+                        action(proxy ? "Phát bằng chế độ thường" : "Phát bằng chế độ tương thích",
+                               icon: "arrow.triangle.2.circlepath") {
+                            SmbRoutePreferences.set(source, proxy: !proxy)
+                            dismiss()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onOpen() }
+                        }
+                    }
                     if entry.kind == .video, let onAddToPlaylist {
                         action("Thêm vào playlist", icon: "text.badge.plus") {
                             dismiss()
