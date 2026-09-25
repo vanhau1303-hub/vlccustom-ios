@@ -376,6 +376,11 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         mediaPlayer.delegate = self
     }
 
+    deinit {
+        // Never release a player that may still be stopping — see VLCControl.
+        VLCControl.retire(mediaPlayer)
+    }
+
     /// Which way the current SMB item is being played, and the timer that gives up on the direct route if it has
     /// not started playing in time.
     private var smbRoute: SmbPlaybackRoute = .direct
@@ -399,8 +404,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         guard let (host, path) = SmbUri.parse(item.source) else {
             guard let local = URL(string: item.source) else { return }
             PlaybackDiagnostics.append("player: local \(item.name)")
-            mediaPlayer.media = VLCMedia(url: local)
-            mediaPlayer.play()
+            VLCControl.play(mediaPlayer, media: VLCMedia(url: local))
             return
         }
         let route = smbRoute
@@ -412,8 +416,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
                 self.fallbackOrFail(item, reason: "could not build media")
                 return
             }
-            self.mediaPlayer.media = media
-            self.mediaPlayer.play()
+            VLCControl.play(self.mediaPlayer, media: media)
             if route == .direct {
                 let work = DispatchWorkItem { [weak self] in
                     guard let self, generation == self.playGeneration, self.time == 0 else { return }
@@ -430,7 +433,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         PlaybackDiagnostics.append("player: \(smbRoute.rawValue) failed (\(reason))")
         if item.isSmb && smbRoute == .direct {
             smbRoute = .proxy
-            mediaPlayer.stop()
+            VLCControl.stop(mediaPlayer)
             start(item)
         } else {
             showError = true
@@ -438,22 +441,24 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     func togglePlayPause() {
-        if mediaPlayer.isPlaying { mediaPlayer.pause() } else { mediaPlayer.play() }
+        VLCControl.toggle(mediaPlayer)
     }
 
     func seek(to fraction: Double) {
-        mediaPlayer.position = Float(fraction)
+        let player = mediaPlayer
+        VLCControl.run { player.position = Float(fraction) }
     }
 
     func skip(ms: Int32) {
         let newTime = max(0, mediaPlayer.time.intValue + ms)
-        mediaPlayer.time = VLCTime(int: newTime)
+        let player = mediaPlayer
+        VLCControl.run { player.time = VLCTime(int: newTime) }
     }
 
     func stop() {
         fallbackWork?.cancel()
         playGeneration += 1
-        mediaPlayer.stop()
+        VLCControl.stop(mediaPlayer)
     }
 
     func cycleAspectRatio() {
@@ -540,7 +545,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     func mediaPlayerStateChanged(_ notification: Notification) {
         DispatchQueue.main.async {
-            self.isPlaying = self.mediaPlayer.isPlaying
+            self.isPlaying = self.mediaPlayer.isActive
             PlaybackDiagnostics.append("player: state=\(self.mediaPlayer.state.rawValue)")
             switch self.mediaPlayer.state {
             case .ended: self.didReachEnd = true

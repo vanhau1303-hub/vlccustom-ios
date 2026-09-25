@@ -26,8 +26,9 @@ enum VlcAudioExtractor {
         media.addOption(":stop-time=\(Double(startMs + durationMs) / 1000)")
 
         let player = VLCMediaPlayer()
-        player.media = media
-        player.play()
+        VLCControl.play(player, media: media)
+        // Handed to VLCControl when done, never released while it may still be stopping.
+        defer { VLCControl.retire(player) }
 
         // A sout-to-file pass is not paced to real time, so 30s of audio normally takes a few seconds.
         let deadline = Date().addingTimeInterval(120)
@@ -39,13 +40,11 @@ enum VlcAudioExtractor {
             case .opening, .buffering, .playing, .esAdded: started = true
             case .ended: started = true
             case .error:
-                player.stop()
                 throw ExtractionError(message: "VLC không đọc được âm thanh của file này.")
             default: break
             }
             if player.state == .ended || (started && player.state == .stopped) { break }
         }
-        player.stop()
 
         guard let data = try? Data(contentsOf: wavURL) else {
             throw ExtractionError(message: "Không tách được âm thanh (không có dữ liệu).")

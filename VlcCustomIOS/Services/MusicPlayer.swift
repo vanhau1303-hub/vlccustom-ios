@@ -104,8 +104,7 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             guard let local = URL(string: item.source) else { return }
             let media = VLCMedia(url: local)
             media.addOption(":no-video")
-            mediaPlayer.media = media
-            mediaPlayer.play()
+            VLCControl.play(mediaPlayer, media: media)
             updateNowPlaying()
             return
         }
@@ -119,37 +118,39 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             }
             // Audio only, even for a .vob/.mkv with a picture track: there is no video surface here.
             media.addOption(":no-video")
-            self.mediaPlayer.media = media
-            self.mediaPlayer.play()
+            VLCControl.play(self.mediaPlayer, media: media)
             self.updateNowPlaying()
         }
     }
 
     func togglePlayPause() {
-        if mediaPlayer.isPlaying { mediaPlayer.pause() } else { mediaPlayer.play() }
+        VLCControl.toggle(mediaPlayer)
         updateNowPlaying()
     }
 
     func skip(ms: Int32) {
         let target = max(0, mediaPlayer.time.intValue + ms)
-        mediaPlayer.time = VLCTime(int: duration > 0 ? min(target, duration - 500) : target)
+        let clamped = duration > 0 ? min(target, duration - 500) : target
+        let player = mediaPlayer
+        VLCControl.run { player.time = VLCTime(int: clamped) }
     }
 
     func seek(to fraction: Double) {
-        mediaPlayer.position = Float(fraction)
+        let player = mediaPlayer
+        VLCControl.run { player.position = Float(fraction) }
     }
 
     func stop() {
         playGeneration += 1
         artwork = nil
         MusicUI.shared.collapse()
-        mediaPlayer.stop()
+        VLCControl.stop(mediaPlayer)
         MusicQueue.shared.start([], index: 0)
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     func playNext() {
-        if MusicQueue.shared.moveNext() != nil { playCurrent() } else { mediaPlayer.stop() }
+        if MusicQueue.shared.moveNext() != nil { playCurrent() } else { VLCControl.stop(mediaPlayer) }
     }
 
     func playPrevious() {
@@ -158,14 +159,18 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
 
     private func configureRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
-        center.playCommand.addTarget { [weak self] _ in self?.mediaPlayer.play(); return .success }
+        center.playCommand.addTarget { [weak self] _ in
+            if let player = self?.mediaPlayer { VLCControl.play(player) }
+            return .success
+        }
         center.pauseCommand.addTarget { [weak self] _ in self?.mediaPlayer.pause(); return .success }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlayPause(); return .success }
         center.nextTrackCommand.addTarget { [weak self] _ in self?.playNext(); return .success }
         center.previousTrackCommand.addTarget { [weak self] _ in self?.playPrevious(); return .success }
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let self, let event = event as? MPChangePlaybackPositionCommandEvent, self.duration > 0 else { return .commandFailed }
-            self.mediaPlayer.time = VLCTime(int: Int32(event.positionTime * 1000))
+            let player = self.mediaPlayer
+            VLCControl.run { player.time = VLCTime(int: Int32(event.positionTime * 1000)) }
             return .success
         }
     }
@@ -176,7 +181,7 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         info[MPMediaItemPropertyArtist] = MusicQueue.shared.current?.artist ?? ""
         info[MPMediaItemPropertyPlaybackDuration] = Double(duration) / 1000
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = Double(time) / 1000
-        info[MPNowPlayingInfoPropertyPlaybackRate] = mediaPlayer.isPlaying ? 1.0 : 0.0
+        info[MPNowPlayingInfoPropertyPlaybackRate] = mediaPlayer.isActive ? 1.0 : 0.0
         if let artwork {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
         }
@@ -187,7 +192,7 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
 
     func mediaPlayerStateChanged(_ notification: Notification) {
         DispatchQueue.main.async {
-            self.isPlaying = self.mediaPlayer.isPlaying
+            self.isPlaying = self.mediaPlayer.isActive
             if self.isPlaying { MusicUI.shared.showMiniBar() }
             switch self.mediaPlayer.state {
             case .ended:
