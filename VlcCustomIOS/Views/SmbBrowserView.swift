@@ -17,6 +17,10 @@ struct SmbBrowserView: View {
     @State private var playing: SmbEntry?
     @State private var viewer: ImageViewerTarget?
     @State private var query = ""
+    /// Results of a search through sub-folders (Search key on the keyboard); nil = just filtering this folder.
+    @State private var deepResults: [SmbEntry]?
+    @State private var deepSearching = false
+    @State private var deepSearchTask: Task<Void, Never>?
     /// Shared with Yêu thích folders and remembered across launches.
     @AppStorage("smb_sort") private var sort: MediaSort = .nameAsc
     @State private var addingToPlaylist: SmbEntry?
@@ -63,7 +67,13 @@ struct SmbBrowserView: View {
             .dismissesKeyboardOnTap()
             .navigationTitle("Mạng")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $query)
+            // Always visible (it hid under the inline title before). Typing filters this folder; the keyboard's
+            // Search key also looks through every sub-folder.
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Tìm file, thư mục…")
+            .onSubmit(of: .search) { searchSubfolders() }
+            .onChange(of: query) { newValue in
+                if newValue.isEmpty { cancelDeepSearch() }
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) { ThumbnailSizeMenu() }
                 ToolbarItem(placement: .primaryAction) { SortMenu(sort: $sort) }
@@ -131,6 +141,7 @@ struct SmbBrowserView: View {
     private func crumb(_ title: String, target: String, isLast: Bool) -> some View {
         Button {
             guard !isLast else { return }
+            cancelDeepSearch()
             path = target
             Task { await load() }
         } label: {
@@ -187,9 +198,61 @@ struct SmbBrowserView: View {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).padding(.top, 48)
         } else if connection != nil && entries.isEmpty {
             ContentUnavailableFallback(title: "Trống", message: "Thư mục này trống.")
+        } else if let connection, let deepResults {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    if deepSearching { ProgressView().scaleEffect(0.8) }
+                    Text(deepSearching ? "Đang tìm trong các thư mục con… (\(deepResults.count) kết quả)"
+                                       : "\(deepResults.count) kết quả cho \"\(query)\" (gồm thư mục con)")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Đóng") { cancelDeepSearch(); query = "" }.font(.footnote)
+                }
+                .padding(.horizontal)
+                SmbFolderContent(host: connection.host, entries: sortedGroups(deepResults), onOpen: open,
+                                 onAddToPlaylist: { addingToPlaylist = $0 }, showsParentPath: true)
+            }
         } else if let connection {
             SmbFolderContent(host: connection.host, entries: displayedEntries, onOpen: open, onAddToPlaylist: { addingToPlaylist = $0 })
         }
+    }
+
+    private func sortedGroups(_ list: [SmbEntry]) -> [SmbEntry] {
+        sort.apply(list.filter(\.isDirectory)) + sort.apply(list.filter { !$0.isDirectory })
+    }
+
+    /// Breadth-first through the sub-folders of the current folder (bounded, so a huge share cannot run forever),
+    /// collecting every file/folder whose name contains the query; results show up as they are found.
+    private func searchSubfolders() {
+        let term = query.trimmingCharacters(in: .whitespaces)
+        guard !term.isEmpty, let connection else { return }
+        cancelDeepSearch()
+        deepResults = []
+        deepSearching = true
+        let root = path
+        deepSearchTask = Task {
+            var queue: [(path: String, depth: Int)] = [(root, 0)]
+            var visited = 0
+            while !queue.isEmpty, !Task.isCancelled, visited < 400, (deepResults?.count ?? 0) < 1000 {
+                let folder = queue.removeFirst()
+                visited += 1
+                guard let items = try? await connection.list(path: folder.path) else { continue }
+                if Task.isCancelled { break }
+                let hits = items.filter { $0.name.localizedCaseInsensitiveContains(term) }
+                if !hits.isEmpty { deepResults?.append(contentsOf: hits) }
+                if folder.depth < 8 {
+                    queue.append(contentsOf: items.filter(\.isDirectory).map { ($0.path, folder.depth + 1) })
+                }
+            }
+            if !Task.isCancelled { deepSearching = false }
+        }
+    }
+
+    private func cancelDeepSearch() {
+        deepSearchTask?.cancel()
+        deepSearchTask = nil
+        deepResults = nil
+        deepSearching = false
     }
 
     private var displayedEntries: [SmbEntry] {
@@ -254,8 +317,11 @@ struct SmbBrowserView: View {
 
     private func open(_ entry: SmbEntry) {
         guard let connection else { return }
-        switch SmbOpener.open(entry, siblings: displayedEntries, host: connection.host, label: "SMB: \(connection.host)/\(path)") {
+        let siblings = deepResults.map(sortedGroups) ?? displayedEntries
+        switch SmbOpener.open(entry, siblings: siblings, host: connection.host, label: "SMB: \(connection.host)/\(path)") {
         case .folder(let newPath):
+            cancelDeepSearch()
+            query = ""
             path = newPath
             Task { await load() }
         case .video:
@@ -268,6 +334,7 @@ struct SmbBrowserView: View {
     }
 
     private func goUp() {
+        cancelDeepSearch()
         if let slash = path.lastIndex(of: "/") {
             path = String(path[path.startIndex..<slash])
         } else {
@@ -277,6 +344,7 @@ struct SmbBrowserView: View {
     }
 
     private func disconnect() {
+        cancelDeepSearch()
         connection = nil
         entries = []
         path = ""

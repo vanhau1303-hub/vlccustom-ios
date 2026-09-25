@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     /// Lets CI's demo-screenshot workflow launch straight into a given tab (via the `DEMO_TAB` environment
@@ -119,7 +120,7 @@ struct SettingsView: View {
                     }
                 }
                 Section {
-                    ShareLink(item: PlaybackDiagnostics.logURL) {
+                    ShareLink(item: DiagnosticsLogFile(), preview: SharePreview("vlc_diagnostics.log")) {
                         Label("Chia sẻ log chẩn đoán", systemImage: "square.and.arrow.up")
                     }
                     Button("Xoá log", role: .destructive) { PlaybackDiagnostics.clear() }
@@ -146,4 +147,13 @@ struct SettingsView: View {
 
 #Preview {
     ContentView()
+}
+
+/// Shared as a fresh, complete snapshot taken at the moment of sharing (see `PlaybackDiagnostics.exportSnapshot`).
+struct DiagnosticsLogFile: Transferable {
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .plainText) { _ in
+            SentTransferredFile(PlaybackDiagnostics.exportSnapshot())
+        }
+    }
 }

@@ -267,6 +267,14 @@ actor ThumbnailService {
         try? data.write(to: diskURL(key))
     }
 
+    /// Drops one entry's thumbnail (and its "no frame / no cover" marker) so it is made again.
+    func forget(source: String) {
+        let key = cacheKey(source)
+        memoryCache.removeObject(forKey: key as NSString)
+        try? FileManager.default.removeItem(at: diskURL(key))
+        try? FileManager.default.removeItem(at: diskDirectory.appendingPathComponent(key + ".none"))
+    }
+
     /// Size of the thumbnail folder, and wiping it (Cài đặt).
     nonisolated static func diskUsage() -> Int64 {
         let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey])) ?? []

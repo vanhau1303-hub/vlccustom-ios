@@ -84,6 +84,7 @@ struct SmbImageThumbnailView: View {
     let width: CGFloat
     let height: CGFloat
     @State private var image: UIImage?
+    @ObservedObject private var events = ThumbnailEvents.shared
 
     var body: some View {
         ZStack {
@@ -96,7 +97,7 @@ struct SmbImageThumbnailView: View {
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .task(id: path) {
+        .task(id: "\(path)#\(events.version)") {
             image = await ThumbnailService.shared.smbImageThumbnail(source: "smb://\(host)/\(path)", host: host, path: path)
         }
     }
@@ -108,9 +109,24 @@ struct SmbFolderContent: View {
     let entries: [SmbEntry]
     let onOpen: (SmbEntry) -> Void
     var onAddToPlaylist: ((SmbEntry) -> Void)?
+    /// Search results from sub-folders: show each entry's folder under its name.
+    var showsParentPath = false
     @ObservedObject private var librarySettings = LibrarySettings.shared
+    @State private var optionsEntry: SmbEntry?
 
     var body: some View {
+        content
+            .sheet(item: $optionsEntry) { entry in
+                SmbEntryOptionsSheet(
+                    entry: entry, host: host,
+                    onOpen: { onOpen(entry) },
+                    onAddToPlaylist: onAddToPlaylist.map { add in { add(entry) } }
+                )
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if librarySettings.viewMode == .grid {
             // As big as the screen allows: 2 columns upright, 4 in landscape.
             GeometryReader { geo in
@@ -120,10 +136,10 @@ struct SmbFolderContent: View {
                 ScrollView {
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(cellWidth), spacing: spacing), count: columns), spacing: 14) {
                         ForEach(entries) { entry in
-                            Button { onOpen(entry) } label: { gridCell(entry, width: cellWidth) }
-                                .buttonStyle(.plain)
-                                .disabled(entry.kind == .other)
-                                .contextMenu { menu(entry) }
+                            gridCell(entry, width: cellWidth)
+                                .contentShape(Rectangle())
+                                .onTapGesture { if entry.kind != .other { onOpen(entry) } }
+                                .onLongPressGesture(minimumDuration: 0.4) { showOptions(entry) }
                         }
                     }
                     .padding(12)
@@ -131,24 +147,34 @@ struct SmbFolderContent: View {
             }
         } else {
             List(entries) { entry in
-                Button { onOpen(entry) } label: {
-                    HStack(spacing: 12) {
-                        SmbEntryThumbnail(entry: entry, host: host, size: librarySettings.thumbnailSize.rowHeight)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.name).lineLimit(2).foregroundStyle(entry.kind == .other ? .secondary : .primary)
-                            if !entry.isDirectory {
-                                Text(ByteCountFormatter.string(fromByteCount: entry.sizeBytes, countStyle: .file))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
+                HStack(spacing: 12) {
+                    SmbEntryThumbnail(entry: entry, host: host, size: librarySettings.thumbnailSize.rowHeight)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.name).lineLimit(2).foregroundStyle(entry.kind == .other ? .secondary : .primary)
+                        if showsParentPath {
+                            Text((entry.path as NSString).deletingLastPathComponent)
+                                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        if !entry.isDirectory {
+                            Text(ByteCountFormatter.string(fromByteCount: entry.sizeBytes, countStyle: .file))
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    .padding(.vertical, 4)
+                    Spacer(minLength: 0)
                 }
-                .disabled(entry.kind == .other)
-                .contextMenu { menu(entry) }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+                // Tap = open; press and hold = the options sheet (info, favorite, playlist, copy, check the file...).
+                .onTapGesture { if entry.kind != .other { onOpen(entry) } }
+                .onLongPressGesture(minimumDuration: 0.4) { showOptions(entry) }
             }
             .listStyle(.plain)
         }
+    }
+
+    private func showOptions(_ entry: SmbEntry) {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        optionsEntry = entry
     }
 
     @ViewBuilder
@@ -168,20 +194,7 @@ struct SmbFolderContent: View {
         .frame(width: width, alignment: .leading)
     }
 
-    @ViewBuilder
-    private func menu(_ entry: SmbEntry) -> some View {
-        if entry.kind != .other {
-            let starred = FavoritesStore.isFavorite(host: host, path: entry.path)
-            Button {
-                FavoritesStore.toggle(host: host, path: entry.path, title: entry.name, isFile: !entry.isDirectory)
-            } label: {
-                Label(starred ? "Bỏ khỏi Yêu thích" : "Thêm vào Yêu thích", systemImage: starred ? "star.slash" : "star")
-            }
-        }
-        if entry.kind == .video, let onAddToPlaylist {
-            Button { onAddToPlaylist(entry) } label: { Label("Thêm vào playlist", systemImage: "text.badge.plus") }
-        }
-    }
+
 }
 
 /// A picture viewer to present over an SMB folder.

@@ -9,6 +9,7 @@ struct VideoThumbnailView: View {
     let size: CGFloat
     @State private var image: UIImage?
     @ObservedObject private var activity = PlaybackActivity.shared
+    @ObservedObject private var events = ThumbnailEvents.shared
 
     var body: some View {
         ZStack {
@@ -21,7 +22,7 @@ struct VideoThumbnailView: View {
         }
         .frame(width: size * 16 / 9, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .task(id: source) {
+        .task(id: "\(source)#\(events.version)") {
             image = await ThumbnailService.shared.cachedThumbnail(source: source)
             // While a video is streaming, only show thumbnails that already exist — generating one is another SMB
             // session + decoder competing with playback.
@@ -137,6 +138,7 @@ struct AudioCoverView: View {
     var width: CGFloat?
     @State private var cover: UIImage?
     @ObservedObject private var activity = PlaybackActivity.shared
+    @ObservedObject private var events = ThumbnailEvents.shared
 
     var body: some View {
         ZStack {
@@ -149,7 +151,7 @@ struct AudioCoverView: View {
         }
         .frame(width: width ?? size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .task(id: source) {
+        .task(id: "\(source)#\(events.version)") {
             cover = await ThumbnailService.shared.cachedThumbnail(source: source)
             guard cover == nil, !activity.isBusy else { return }
             cover = await ThumbnailService.shared.audioCover(source: source)

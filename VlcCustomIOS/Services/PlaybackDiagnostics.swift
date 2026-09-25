@@ -60,4 +60,17 @@ enum PlaybackDiagnostics {
     }
 
     private static let writeQueue = DispatchQueue(label: "PlaybackDiagnostics")
+
+    /// A complete, closed copy of the log to share. Sharing the live file handed iOS a file still being written
+    /// to — one shared log came through cut off after 1KB. Pending lines are flushed first.
+    static func exportSnapshot() -> URL {
+        writeQueue.sync { try? handle?.synchronize() }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let copy = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vlc_diagnostics_\(formatter.string(from: Date())).log")
+        try? FileManager.default.removeItem(at: copy)
+        try? FileManager.default.copyItem(at: logURL, to: copy)
+        return copy
+    }
 }
