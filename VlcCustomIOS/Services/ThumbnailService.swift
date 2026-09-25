@@ -95,7 +95,7 @@ actor ThumbnailService {
 
     /// Thumbnail for an SMB video, taken by libVLC itself (`VLCMediaThumbnailer`) over its own SMB2 module — works
     /// for every format VLC plays (MKV, AVI, HEVC...). One at a time: each is its own SMB session plus a decoder.
-    func smbVideoThumbnail(source: String, host: String, path: String) async -> UIImage? {
+    private func makeSmbVideoThumbnail(source: String, host: String, path: String) async -> UIImage? {
         if let cached = cachedThumbnail(source: source) { return cached }
         let key = cacheKey(source)
         let noFrame = diskDirectory.appendingPathComponent(key + ".none")
@@ -138,7 +138,7 @@ actor ThumbnailService {
 
     /// Thumbnail for a picture on an SMB share (bytes via `SmbImageLoader`, downsampled without decoding the full
     /// picture).
-    func smbImageThumbnail(source: String, host: String, path: String) async -> UIImage? {
+    private func makeSmbImageThumbnail(source: String, host: String, path: String) async -> UIImage? {
         if let cached = cachedThumbnail(source: source) { return cached }
         await acquireSmbSlot()
         defer { releaseSmbSlot() }
@@ -150,7 +150,7 @@ actor ThumbnailService {
 
     /// Cover art embedded in a song (ID3/FLAC/MP4 tags...), read by libVLC's own parser — over its SMB2 module for
     /// network files. Songs without a cover get a marker file so they are not parsed again every time.
-    func audioCover(source: String) async -> UIImage? {
+    private func makeAudioCover(source: String) async -> UIImage? {
         if let cached = cachedThumbnail(source: source) { return cached }
         let key = cacheKey(source)
         let noCover = diskDirectory.appendingPathComponent(key + ".none")
@@ -199,17 +199,85 @@ actor ThumbnailService {
         PlaybackActivity.shared.isBusy
     }
 
+    // MARK: - Public entry points (de-duplicated: a thumbnail asked for by a visible cell and by the folder prefill at
+    // the same time is made once).
+
+    func smbVideoThumbnail(source: String, host: String, path: String) async -> UIImage? {
+        await once(source) { await self.makeSmbVideoThumbnail(source: source, host: host, path: path) }
+    }
+
+    func smbImageThumbnail(source: String, host: String, path: String) async -> UIImage? {
+        await once(source) { await self.makeSmbImageThumbnail(source: source, host: host, path: path) }
+    }
+
+    func audioCover(source: String) async -> UIImage? {
+        await once(source) { await self.makeAudioCover(source: source) }
+    }
+
+    func folderThumbnail(host: String, path: String) async -> UIImage? {
+        await once("smbfolder://\(host)/\(path)") { await self.makeFolderThumbnail(host: host, path: path) }
+    }
+
+    private var inflight: [String: Task<UIImage?, Never>] = [:]
+
+    private func once(_ key: String, _ make: @escaping () async -> UIImage?) async -> UIImage? {
+        if let running = inflight[key] { return await running.value }
+        let task = Task { await make() }
+        inflight[key] = task
+        let result = await task.value
+        inflight[key] = nil
+        return result
+    }
+
+    /// Fast mode: make every thumbnail of a folder ahead of the scroll, `jobLimit` at a time, top to bottom. Stops
+    /// when the folder view goes away (task cancelled) or a video opens.
+    func prefill(host: String, entries: [SmbEntry]) async {
+        let queue = PrefillQueue(entries.filter { $0.kind != .other })
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<3 {
+                group.addTask {
+                    while !Task.isCancelled, ThumbnailPolicy.shared.isFast, let entry = await queue.next() {
+                        let source = "smb://\(host)/\(entry.path)"
+                        switch entry.kind {
+                        case .video: _ = await self.smbVideoThumbnail(source: source, host: host, path: entry.path)
+                        case .image: _ = await self.smbImageThumbnail(source: source, host: host, path: entry.path)
+                        case .audio: _ = await self.audioCover(source: source)
+                        case .folder: _ = await self.folderThumbnail(host: host, path: entry.path)
+                        case .other: break
+                        }
+                    }
+                }
+            }
+        }
+        ThumbnailEvents.shared.changedSoon()
+    }
+
+
+    // MARK: - SMB job slots (limit follows ThumbnailPolicy: 3 in fast mode, 1 otherwise)
+
     private var smbActive = 0
     private var smbWaiters: [CheckedContinuation<Void, Never>] = []
-    private static let maxSmbJobs = 1
 
     private func acquireSmbSlot() async {
-        if smbActive < Self.maxSmbJobs { smbActive += 1; return }
-        await withCheckedContinuation { smbWaiters.append($0) } // the releasing caller hands its slot over
+        if smbActive < ThumbnailPolicy.shared.jobLimit { smbActive += 1; return }
+        await withCheckedContinuation { smbWaiters.append($0) } // a releasing caller hands its slot over
     }
 
     private func releaseSmbSlot() {
-        if smbWaiters.isEmpty { smbActive -= 1 } else { smbWaiters.removeFirst().resume() }
+        // Hand the slot over only while under the current limit (it drops to 1 when a video opens).
+        if !smbWaiters.isEmpty, smbActive <= ThumbnailPolicy.shared.jobLimit {
+            smbWaiters.removeFirst().resume()
+        } else {
+            smbActive -= 1
+        }
+    }
+
+    /// The limit went up (video closed / fast mode switched on): start waiting jobs into the new free slots.
+    func policyChanged() {
+        while !smbWaiters.isEmpty, smbActive < ThumbnailPolicy.shared.jobLimit {
+            smbActive += 1
+            smbWaiters.removeFirst().resume()
+        }
     }
 
     /// One frame of an SMB file rendered by libVLC, `width` px wide, at `position` (0...1) of its duration.
@@ -284,7 +352,7 @@ actor ThumbnailService {
     /// A folder's picture made from what is inside it: up to four of its pictures/videos in a 2×2 mosaic (one fills
     /// the whole tile). Uses thumbnails that already exist first and makes at most two new ones, so a folder view
     /// does not turn into dozens of SMB sessions. Folders with nothing to show get a marker and keep the plain icon.
-    func folderThumbnail(host: String, path: String) async -> UIImage? {
+    private func makeFolderThumbnail(host: String, path: String) async -> UIImage? {
         let source = "smbfolder://\(host)/\(path)"
         if let cached = cachedThumbnail(source: source) { return cached }
         let key = cacheKey(source)
@@ -449,5 +517,17 @@ private final class ThumbnailJob: NSObject, VLCMediaThumbnailerDelegate {
             self.thumbnailer = nil
             Self.inFlight.remove(self)
         }
+    }
+}
+
+/// Hands a folder's entries out one at a time to the prefill workers.
+private actor PrefillQueue {
+    private var entries: [SmbEntry]
+    private var index = 0
+    init(_ entries: [SmbEntry]) { self.entries = entries }
+    func next() -> SmbEntry? {
+        guard index < entries.count else { return nil }
+        defer { index += 1 }
+        return entries[index]
     }
 }

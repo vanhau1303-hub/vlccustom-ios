@@ -7,6 +7,11 @@ final class ThumbnailEvents: ObservableObject {
     @Published private(set) var version = 0
     private init() {}
     func changed() { version += 1 }
+
+    /// From background work: one refresh on the main thread.
+    func changedSoon() {
+        DispatchQueue.main.async { self.changed() }
+    }
 }
 
 /// Long-press on an SMB file or folder: what it is, and everything that can be done with it.

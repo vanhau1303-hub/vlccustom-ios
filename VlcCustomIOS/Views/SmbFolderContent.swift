@@ -116,6 +116,11 @@ struct SmbFolderContent: View {
 
     var body: some View {
         content
+            // "Ưu tiên tạo thumbnail nhanh": make the whole folder's thumbnails ahead of the scroll.
+            .task(id: entries.map(\.path).joined(separator: "|")) {
+                guard ThumbnailPolicy.shared.isFast, !entries.isEmpty else { return }
+                await ThumbnailService.shared.prefill(host: host, entries: entries)
+            }
             .sheet(item: $optionsEntry) { entry in
                 SmbEntryOptionsSheet(
                     entry: entry, host: host,

@@ -75,6 +75,7 @@ private enum LibraryScreen: String, Identifiable, CaseIterable {
 struct SettingsView: View {
     @State private var library: LibraryScreen?
     @State private var thumbnailBytes: Int64 = 0
+    @AppStorage(ThumbnailPolicy.fastKey) private var fastThumbnails = true
 
     var body: some View {
         NavigationStack {
@@ -92,6 +93,17 @@ struct SettingsView: View {
                          "tốc độ phát, chọn track âm thanh/phụ đề, chỉnh màu, khử sọc, tỉ lệ khung hình, phụ đề AI (nhận dạng " +
                          "giọng nói ngay trên máy) và dịch tự động sang ngôn ngữ khác.")
                         .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Section {
+                    Toggle(isOn: $fastThumbnails) {
+                        Label("Ưu tiên tạo thumbnail nhanh", systemImage: "hare")
+                    }
+                    .onChange(of: fastThumbnails) { on in
+                        ThumbnailPolicy.shared.fastEnabled = on
+                        Task { await ThumbnailService.shared.policyChanged() }
+                    }
+                } footer: {
+                    Text("Tạo 3 thumbnail cùng lúc và tạo trước cho cả thư mục. Khi mở video sẽ tự trở về chế độ bình thường (tạm dừng tạo thumbnail) để video không bị giật, đóng video thì chạy nhanh lại.")
                 }
                 Section {
                     HStack {
