@@ -104,18 +104,20 @@ actor ThumbnailService {
         if FileManager.default.fileExists(atPath: noFrame.path) { return nil }
         await acquireSmbSlot()
         defer { releaseSmbSlot() }
-        if Task.isCancelled || (await Self.videoIsPlaying()) { return nil }
+        if Task.isCancelled { return nil }
+        let busy = await Self.videoIsPlaying()
+        if busy { return nil }
         if let cached = cachedThumbnail(source: source) { return cached }
 
         let login = await SmbRegistry.shared.login(for: host)
         guard let cgImage = await Self.vlcSnapshot(host: host, path: path, login: login, width: 640, position: 0.1) else {
             PlaybackDiagnostics.append("thumb: VLC gave no frame for \(path)")
             // Only remember it if nothing else was going on (a video starting mid-way can make it fail too).
-            if !(await Self.videoIsPlaying()) { FileManager.default.createFile(atPath: noFrame.path, contents: nil) }
+            let busyNow = await Self.videoIsPlaying()
+            if !busyNow { FileManager.default.createFile(atPath: noFrame.path, contents: nil) }
             return nil
         }
         let image = UIImage(cgImage: cgImage)
-        let key = cacheKey(source)
         remember(image, key: key)
         saveToDisk(image, key: key)
         return image
@@ -143,7 +145,9 @@ actor ThumbnailService {
 
         await acquireSmbSlot()
         defer { releaseSmbSlot() }
-        if Task.isCancelled || (await Self.videoIsPlaying()) { return nil }
+        if Task.isCancelled { return nil }
+        let busy = await Self.videoIsPlaying()
+        if busy { return nil }
         if let cached = cachedThumbnail(source: source) { return cached }
 
         let media: VLCMedia?
