@@ -60,6 +60,25 @@ enum SmbPlayback {
         return URL(string: "smb://\(host)/\(encoded)")
     }
 
+    /// URL + libVLC options for "share/path" over `route` — what `media(...)` builds, as plain strings for the
+    /// frame grabber (which drives libVLC directly). Proxy URLs made here are marked as background work.
+    static func location(host: String, path: String, route: SmbPlaybackRoute, login: Login?) -> (url: String, options: [String])? {
+        switch route {
+        case .direct:
+            guard let url = directURL(host: host, path: path) else { return nil }
+            let domain = login?.domain ?? ""
+            return (url.absoluteString, [
+                ":smb-user=\(login?.username ?? "")",
+                ":smb-pwd=\(login?.password ?? "")",
+                ":smb-domain=\(domain.isEmpty ? "WORKGROUP" : domain)",
+                ":network-caching=999",
+            ])
+        case .proxy:
+            guard let url = try? SmbHttpProxy.shared.url(host: host, path: path, background: true) else { return nil }
+            return (url.absoluteString, [":network-caching=999"])
+        }
+    }
+
     /// A ready-to-play `VLCMedia` for "share/path/file.ext" on `host` over `route`, or nil if the URL could not be built.
     static func media(host: String, path: String, route: SmbPlaybackRoute, login: Login?) -> VLCMedia? {
         let media: VLCMedia

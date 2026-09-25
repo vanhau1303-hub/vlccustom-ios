@@ -20,7 +20,11 @@ final class SmbHttpProxy {
     /// URL token → (host, path). The URL carries only an opaque token plus the file name (for the extension VLC
     /// uses as a demuxer hint), so SMB paths with "&", "+", "#", "%" or Vietnamese characters never have to survive
     /// a round-trip through URL encoding inside libVLC.
-    private var targets: [String: (host: String, path: String)] = [:]
+    private var targets: [String: (host: String, path: String, background: Bool)] = [:]
+    /// Open connections serving background work (thumbnails), cut off the moment a video opens.
+    private var backgroundConnections: [ObjectIdentifier: NWConnection] = [:]
+    /// File sizes remembered for a minute (like the Android proxy): every seek used to cost an extra SMB round trip.
+    private var sizeCache: [String: (size: Int64, at: Date)] = [:]
     private var tokensByKey: [String: String] = [:]
     private let targetsLock = NSLock()
 
@@ -101,9 +105,10 @@ final class SmbHttpProxy {
     }
 
     /// URL to hand to VLCKit for "share/path/file.ext" on `host`.
-    func url(host: String, path: String) throws -> URL {
+    /// `background`: for thumbnails — refused while a video is open and cut off when one opens.
+    func url(host: String, path: String, background: Bool = false) throws -> URL {
         try ensureStarted()
-        let token = token(host: host, path: path)
+        let token = token(host: host, path: path, background: background)
         let name = (path as NSString).lastPathComponent
         let ext = (name as NSString).pathExtension
         // Keep only a safe ASCII stand-in for the name: VLC needs the extension, nothing else.
@@ -114,18 +119,47 @@ final class SmbHttpProxy {
         return url
     }
 
-    private func token(host: String, path: String) -> String {
+    private func token(host: String, path: String, background: Bool) -> String {
         targetsLock.lock()
         defer { targetsLock.unlock() }
-        let key = host.lowercased() + "\n" + path
+        let key = host.lowercased() + "\n" + path + (background ? "\nbg" : "")
         if let existing = tokensByKey[key] { return existing }
         let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
         tokensByKey[key] = token
-        targets[token] = (host, path)
+        targets[token] = (host, path, background)
         return token
     }
 
-    private func target(for token: String) -> (host: String, path: String)? {
+    /// A video just opened: drop every connection feeding a thumbnail so it gets the whole link.
+    func cancelBackground() {
+        targetsLock.lock()
+        let open = Array(backgroundConnections.values)
+        backgroundConnections.removeAll()
+        targetsLock.unlock()
+        if !open.isEmpty { PlaybackDiagnostics.append("proxy: video opened — cancelling \(open.count) thumbnail stream(s)") }
+        open.forEach { $0.cancel() }
+    }
+
+    private func track(_ connection: NWConnection, background: Bool) {
+        guard background else { return }
+        targetsLock.lock(); backgroundConnections[ObjectIdentifier(connection)] = connection; targetsLock.unlock()
+    }
+
+    private func untrack(_ connection: NWConnection) {
+        targetsLock.lock(); backgroundConnections[ObjectIdentifier(connection)] = nil; targetsLock.unlock()
+    }
+
+    private func cachedSize(_ key: String) -> Int64? {
+        targetsLock.lock(); defer { targetsLock.unlock() }
+        guard let entry = sizeCache[key], Date().timeIntervalSince(entry.at) < 60 else { return nil }
+        return entry.size
+    }
+
+    private func rememberSize(_ key: String, _ size: Int64) {
+        targetsLock.lock(); sizeCache[key] = (size, Date()); targetsLock.unlock()
+    }
+
+    private func target(for token: String) -> (host: String, path: String, background: Bool)? {
         targetsLock.lock()
         defer { targetsLock.unlock() }
         return targets[token]
@@ -175,6 +209,11 @@ final class SmbHttpProxy {
         }
         let host = resolved.host
         let path = resolved.path
+        if resolved.background && ThumbnailPolicy.shared.videoOpen {
+            close(connection, status: 503)
+            return
+        }
+        track(connection, background: resolved.background)
 
         PlaybackDiagnostics.append("proxy: \(method) \(path) range=\(rangeHeader ?? "-")")
 
@@ -193,9 +232,15 @@ final class SmbHttpProxy {
                 return
             }
 
+            let sizeKey = host.lowercased() + "\n" + path
             let length: Int64
             do {
-                length = try await smb.fileSize(path: path)
+                if let known = self.cachedSize(sizeKey) {
+                    length = known
+                } else {
+                    length = try await smb.fileSize(path: path)
+                    self.rememberSize(sizeKey, length)
+                }
             } catch {
                 PlaybackDiagnostics.append("proxy: fileSize failed for \(path): \(error.localizedDescription) — 500")
                 close(connection, status: 500)
@@ -242,7 +287,24 @@ final class SmbHttpProxy {
             let remaining = Counter(contentLength)
             let sent = Counter(0)
             do {
-                try await smb.streamContents(path: path, from: start) { chunk in
+                // Quick first answer (like the Android proxy): a small read goes out right away, instead of the
+                // client waiting for a whole read-size block (up to 8 MB on Windows) after every seek — players
+                // that jump around a file (fragmented / non-interleaved MP4) seek hundreds of times.
+                let firstCount = Int(min(Int64(256 * 1024), contentLength))
+                let first = try await smb.readChunk(path: path, offset: start, count: firstCount)
+                if !first.isEmpty, !state.isGone {
+                    let delivered = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                        connection.send(content: first, completion: .contentProcessed { error in cont.resume(returning: error == nil) })
+                    }
+                    if delivered {
+                        remaining.value -= Int64(first.count)
+                        sent.value += Int64(first.count)
+                    } else {
+                        state.markGone()
+                    }
+                }
+                if remaining.value > 0, !state.isGone {
+                try await smb.streamContents(path: path, from: start + sent.value) { chunk in
                     // Runs synchronously on AMSMB2's worker thread: blocking here until the socket took the chunk is
                     // the backpressure, and returning false is how the read stops.
                     if state.isGone || chunk.isEmpty { return false }
@@ -262,10 +324,12 @@ final class SmbHttpProxy {
                     sent.value += Int64(slice.count)
                     return remaining.value > 0 && !state.isGone
                 }
+                }
                 PlaybackDiagnostics.append("proxy: done, sent \(sent.value)/\(contentLength) bytes\(state.isGone ? " (client closed)" : "")")
             } catch {
                 PlaybackDiagnostics.append("proxy: SMB read error after \(sent.value)/\(contentLength) bytes: \(error.localizedDescription)")
             }
+            self.untrack(connection)
             self.finish(connection)
         }
     }
@@ -278,6 +342,7 @@ final class SmbHttpProxy {
     }
 
     private func close(_ connection: NWConnection, status: Int) {
+        untrack(connection)
         let head = "HTTP/1.1 \(status) Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in connection.cancel() })
     }

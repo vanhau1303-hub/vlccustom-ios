@@ -172,6 +172,19 @@ actor SmbConnection {
         }
     }
 
+    /// One small read without the whole-file gate — the proxy's quick first chunk after a seek.
+    func readChunk(path: String, offset: Int64, count: Int) async throws -> Data {
+        let (share, relative) = Self.split(path)
+        let range: Range<Int64> = offset..<(offset + Int64(count))
+        do {
+            return try await withManager(share: share) { (manager) -> Data in
+                try await manager.contents(atPath: "/" + relative, range: range)
+            }
+        } catch {
+            throw SmbError(message: Self.friendlyMessage(error))
+        }
+    }
+
     /// Reads "share/path/file.ext" sequentially from `offset`, opening the remote file once, handing each chunk
     /// (AMSMB2's max read size, typically 1–8MB) to `onChunk` **synchronously on AMSMB2's worker thread**. Reading
     /// stops as soon as `onChunk` returns `false`, so the caller controls both backpressure (block inside `onChunk`

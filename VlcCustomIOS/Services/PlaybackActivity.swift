@@ -10,6 +10,11 @@ final class PlaybackActivity: ObservableObject {
         didSet {
             guard isBusy != oldValue else { return }
             ThumbnailPolicy.shared.videoOpen = isBusy
+            if isBusy {
+                // The video gets the network to itself: stop frame grabs and proxy streams feeding thumbnails.
+                VLCSnapshotter.cancelAll()
+                SmbHttpProxy.shared.cancelBackground()
+            }
             Task { await ThumbnailService.shared.policyChanged() }
         }
     }

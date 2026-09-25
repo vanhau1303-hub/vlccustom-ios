@@ -93,7 +93,7 @@ actor ThumbnailService {
         return nil
     }
 
-    /// Thumbnail for an SMB video, taken by libVLC itself (`VLCMediaThumbnailer`) over its own SMB2 module — works
+    /// Thumbnail for an SMB video, taken by libVLC itself (`VLCSnapshotter`) over its own SMB2 module — works
     /// for every format VLC plays (MKV, AVI, HEVC...). One at a time: each is its own SMB session plus a decoder.
     private func makeSmbVideoThumbnail(source: String, host: String, path: String) async -> UIImage? {
         if let cached = cachedThumbnail(source: source) { return cached }
@@ -280,18 +280,13 @@ actor ThumbnailService {
         }
     }
 
-    /// One frame of an SMB file rendered by libVLC, `width` px wide, at `position` (0...1) of its duration.
-    @MainActor
+    /// One frame of an SMB file rendered by libVLC (off the main thread, cancellable — see VLCSnapshotter),
+    /// at most `width` px wide, at `position` (0...1) of its duration.
     static func vlcSnapshot(host: String, path: String, login: SmbPlayback.Login?, width: CGFloat, position: Float,
                             route: SmbPlaybackRoute = .direct) async -> CGImage? {
-        guard let media = SmbPlayback.media(host: host, path: path, route: route, login: login) else { return nil }
-        return await withCheckedContinuation { continuation in
-            let job = ThumbnailJob(continuation: continuation)
-            let thumbnailer = VLCMediaThumbnailer(media: media, andDelegate: job)
-            thumbnailer.thumbnailWidth = width
-            thumbnailer.snapshotPosition = position
-            job.start(thumbnailer)
-        }
+        guard let target = SmbPlayback.location(host: host, path: path, route: route, login: login) else { return nil }
+        return await VLCSnapshotter.snapshot(location: target.url, options: target.options,
+                                             maxWidth: Int(width), position: position)
     }
 
     /// Downsized thumbnail for a picture at `source`; `data` is provided directly for SMB images (fetched by the
@@ -471,51 +466,6 @@ private extension UIImage {
         format.scale = 1
         return UIGraphicsImageRenderer(size: newSize, format: format).image { _ in
             draw(in: CGRect(origin: .zero, size: newSize))
-        }
-    }
-}
-
-/// One `VLCMediaThumbnailer` run. Keeps itself (and the thumbnailer) alive in `inFlight` until libVLC calls back —
-/// releasing a thumbnailer while libVLC is still working on it crashes — while the waiting caller is released after
-/// at most 20s regardless.
-private final class ThumbnailJob: NSObject, VLCMediaThumbnailerDelegate {
-    private static var inFlight = Set<ThumbnailJob>()
-
-    private var continuation: CheckedContinuation<CGImage?, Never>?
-    private var thumbnailer: VLCMediaThumbnailer?
-
-    init(continuation: CheckedContinuation<CGImage?, Never>) {
-        self.continuation = continuation
-    }
-
-    func start(_ thumbnailer: VLCMediaThumbnailer) {
-        self.thumbnailer = thumbnailer
-        Self.inFlight.insert(self)
-        thumbnailer.fetchThumbnail()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.resume(nil) }
-        // Hard cleanup if libVLC never calls back at all.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in self?.done() }
-    }
-
-    func mediaThumbnailerDidTimeOut(_ mediaThumbnailer: VLCMediaThumbnailer) {
-        DispatchQueue.main.async { self.resume(nil); self.done() }
-    }
-
-    func mediaThumbnailer(_ mediaThumbnailer: VLCMediaThumbnailer, didFinishThumbnail thumbnail: CGImage) {
-        DispatchQueue.main.async { self.resume(thumbnail); self.done() }
-    }
-
-    private func resume(_ image: CGImage?) {
-        guard let continuation else { return }
-        self.continuation = nil
-        continuation.resume(returning: image)
-    }
-
-    private func done() {
-        // Let go on the next turn, not from inside libVLC's own callback.
-        DispatchQueue.main.async {
-            self.thumbnailer = nil
-            Self.inFlight.remove(self)
         }
     }
 }
