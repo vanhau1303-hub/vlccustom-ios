@@ -140,7 +140,10 @@ final class LiveSubtitles: ObservableObject {
 
     /// The cue that should be on screen at `ms` (with a little slack either side, like the Android overlay).
     func activeCue(at ms: Int) -> LiveCue? {
-        cues.last { ms >= $0.startMs - 150 && ms <= $0.endMs + 150 }
+        // The latest cue that has started; shown only until its own end (no trailing slack — that slack is what
+        // let a finished line linger over the next scene).
+        guard let cue = cues.last(where: { $0.startMs - 100 <= ms }), ms <= cue.endMs else { return nil }
+        return cue
     }
 
     private func run(source: String, durationMs: Int, modelSize: String, language: String?, translateTo: String?, dual: Bool) async {
@@ -219,24 +222,32 @@ final class LiveSubtitles: ObservableObject {
                 // skipSpecialTokens: without it every segment's text carried Whisper's control tokens
                 // ("<|startoftranscript|><|vi|><|0.00|>…") — the "code" that showed up instead of subtitles.
                 // temperatureFallbackCount 2 (default 5): hard-to-hear windows no longer get decoded 6 times over.
+                // wordTimestamps: per-word times, used to cut Whisper's long segments (it happily returns one
+                // 10–30 s segment for continuous speech) into short cues that each appear when they are spoken.
                 let options = DecodingOptions(task: .transcribe, language: language, temperatureFallbackCount: 2,
-                                              skipSpecialTokens: true, noSpeechThreshold: 0.6)
+                                              skipSpecialTokens: true, wordTimestamps: true, noSpeechThreshold: 0.6)
                 let results = try await whisper.transcribe(audioArray: samples, decodeOptions: options)
 
+                // Where the extracted audio really starts. libVLC's :start-time lands on the keyframe before the
+                // requested time, while :stop-time is exact — so the audio ends at cursor + length and its real
+                // start follows from its length. Without this every cue in the window was shifted.
+                let audioMs = samples.count / 16 // 16 kHz
+                let audioStart = (audioMs > length / 2 && audioMs < length + 15_000) ? cursor + length - audioMs : cursor
+
                 if let segments = results.first?.segments, !segments.isEmpty {
-                    for segment in segments {
-                        let text = cleanText(segment.text)
+                    for piece in Self.split(segments) {
+                        let text = cleanText(piece.text)
                         guard !text.isEmpty else { continue }
-                        let startMs = cursor + Int(segment.start * 1000)
-                        let recognizedEndMs = cursor + Int(segment.end * 1000)
+                        let startMs = audioStart + piece.startMs
+                        let recognizedEndMs = audioStart + piece.endMs
                         let endMs = SubtitleLayout.endFor(startMs: startMs, recognizedEndMs: recognizedEndMs, text: text)
                         // Shown in the original language right away; translated in place by the background
                         // translation queue (batched), without holding up recognition of the next window.
-                        cues.removeAll { $0.startMs == startMs }
+                        cues.removeAll { abs($0.startMs - startMs) < 200 }
                         cues.append(LiveCue(startMs: startMs, endMs: endMs, text: SubtitleLayout.wrap(text)))
                         if self.translateTo != nil { pending[startMs] = text }
                     }
-                    cues.sort { $0.startMs < $1.startMs }
+                    normalizeCues()
                 }
                 // Whole windows, back to back: the next window's audio is already being extracted from exactly
                 // cursor + length, so it can be used as is.
@@ -256,6 +267,86 @@ final class LiveSubtitles: ObservableObject {
         status = nil
         running = false
         startDrainingIfNeeded()
+    }
+
+    // MARK: - Cue shaping
+
+    private struct Piece { let startMs: Int; let endMs: Int; let text: String }
+
+    /// Whisper segments → subtitle-sized pieces: at most ~2 lines (84 chars) or 5 s each, cut at sentence ends and
+    /// at pauses, timed by the words in them. Segments without word times are split by sentence, spreading the
+    /// segment's time over the pieces by length.
+    private static func split(_ segments: [TranscriptionSegment]) -> [Piece] {
+        var pieces: [Piece] = []
+        for segment in segments {
+            if let words = segment.words, !words.isEmpty {
+                var text = ""
+                var start: Float = words[0].start
+                var end: Float = words[0].start
+                func flush() {
+                    let trimmed = text.trimmingCharacters(in: .whitespaces)
+                    if !trimmed.isEmpty {
+                        pieces.append(Piece(startMs: Int(start * 1000), endMs: Int(end * 1000), text: trimmed))
+                    }
+                    text = ""
+                }
+                for word in words {
+                    let piece = word.word
+                    let gap = word.start - end
+                    if !text.isEmpty && (gap > 0.8 || word.end - start > 5 || text.count + piece.count > 84) {
+                        flush()
+                    }
+                    if text.isEmpty { start = word.start }
+                    text += piece
+                    end = word.end
+                    let sentenceEnd = piece.trimmingCharacters(in: .whitespaces).last.map { ".?!…。？！".contains($0) } ?? false
+                    if sentenceEnd && text.count > 25 { flush() }
+                }
+                flush()
+            } else {
+                let sentences = sentenceChunks(segment.text)
+                let total = max(1, sentences.reduce(0) { $0 + $1.count })
+                var t = segment.start
+                let duration = segment.end - segment.start
+                for sentence in sentences {
+                    let share = duration * Float(sentence.count) / Float(total)
+                    pieces.append(Piece(startMs: Int(t * 1000), endMs: Int((t + share) * 1000), text: sentence))
+                    t += share
+                }
+            }
+        }
+        return pieces
+    }
+
+    /// Splits text into sentence-sized chunks of at most ~84 characters.
+    private static func sentenceChunks(_ text: String) -> [String] {
+        var chunks: [String] = []
+        var current = ""
+        for word in text.split(separator: " ") {
+            if !current.isEmpty && current.count + word.count + 1 > 84 {
+                chunks.append(current)
+                current = ""
+            }
+            current += current.isEmpty ? String(word) : " " + word
+            if let last = word.last, ".?!…。？！".contains(last), current.count > 25 {
+                chunks.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
+    }
+
+    /// Sorted, and every cue ends before the next one starts — a long line never stays on screen over the next
+    /// line/scene.
+    private func normalizeCues() {
+        cues.sort { $0.startMs < $1.startMs }
+        for i in cues.indices.dropLast() {
+            let next = cues[i + 1].startMs
+            if cues[i].endMs > next - 40 {
+                cues[i] = LiveCue(startMs: cues[i].startMs, endMs: max(cues[i].startMs + 300, next - 40), text: cues[i].text)
+            }
+        }
     }
 
     // MARK: - Translation queue
@@ -399,7 +490,7 @@ final class LiveSubtitles: ObservableObject {
     }
 
     private static func cacheKey(source: String, language: String?, translateTo: String?, dual: Bool) -> String {
-        let raw = "v2|\(source)|\(language ?? "auto")|\(translateTo ?? "")|\(dual)"
+        let raw = "v3|\(source)|\(language ?? "auto")|\(translateTo ?? "")|\(dual)"
         let digest = SHA256.hash(data: Data(raw.utf8))
         return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
