@@ -28,6 +28,8 @@ struct PlayerScreen: View {
     @State private var seekPreviewMs: Int?
     @State private var gestureHint: String?
     @State private var controlsHideToken = 0
+    /// Rate to go back to when the press-and-hold 2× boost ends.
+    @State private var speedBoostFrom: Float?
     @State private var showQueue = false
 
     private static let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
@@ -54,6 +56,20 @@ struct PlayerScreen: View {
                         })
                 )
                 .simultaneousGesture(playerDragGesture(in: geo.size))
+                // Press and hold = 2× speed while held (VLC for iOS's "long touch speed-up").
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.45)
+                        .sequenced(before: DragGesture(minimumDistance: 0))
+                        .onChanged { value in
+                            if case .second(true, _) = value, speedBoostFrom == nil, dragMode == nil {
+                                speedBoostFrom = player.playbackRate
+                                player.playbackRate = 2.0
+                                gestureHint = "2× ▶▶"
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }
+                        }
+                        .onEnded { _ in endSpeedBoost() }
+                )
 
             if player.isLoading {
                 VStack(spacing: 10) {
@@ -311,6 +327,13 @@ struct PlayerScreen: View {
             }
     }
 
+    private func endSpeedBoost() {
+        guard let rate = speedBoostFrom else { return }
+        player.playbackRate = rate
+        speedBoostFrom = nil
+        if gestureHint == "2× ▶▶" { gestureHint = nil }
+    }
+
     private func showHint(_ text: String) {
         gestureHint = text
         Task {
@@ -362,9 +385,15 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     var progress: Double { duration > 0 ? Double(time) / Double(duration) : 0 }
 
+    /// Kept here and applied on the VLC control queue: libVLC's rate getter/setter take the player lock.
+    private var cachedRate: Float = 1
     var playbackRate: Float {
-        get { mediaPlayer.rate }
-        set { mediaPlayer.rate = newValue }
+        get { cachedRate }
+        set {
+            cachedRate = newValue
+            let player = mediaPlayer
+            VLCControl.run { player.rate = newValue }
+        }
     }
 
     override init() {
@@ -452,6 +481,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             guard let local = URL(string: item.source) else { return }
             PlaybackDiagnostics.append("player: local \(item.name)")
             let media = VLCMedia(url: local)
+            VLCTuning.apply(to: media, network: false)
             if let resumeAtMs { media.addOption(":start-time=\(Double(resumeAtMs) / 1000)") }
             VLCControl.play(mediaPlayer, media: media)
             return

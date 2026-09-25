@@ -63,7 +63,7 @@ struct SmbEntryThumbnail: View {
 
     var body: some View {
         switch entry.kind {
-        case .folder: FolderThumbnailView(size: size)
+        case .folder: SmbFolderThumbnailView(host: host, path: entry.path, width: size * 16 / 9, height: size)
         case .video: VideoThumbnailView(source: "smb://\(host)/\(entry.path)", size: size)
         case .image: SmbImageThumbnailView(host: host, path: entry.path, width: size * 16 / 9, height: size)
         case .audio: AudioCoverView(source: "smb://\(host)/\(entry.path)", size: size)
@@ -179,8 +179,8 @@ struct SmbFolderContent: View {
     private func prefetch(after entry: SmbEntry) {
         guard let index = entries.firstIndex(of: entry) else { return }
         let upcoming = entries[(index + 1)..<min(entries.count, index + 13)]
-            .filter { $0.kind == .video || $0.kind == .image || $0.kind == .audio }
-            .map { "smb://\(host)/\($0.path)" }
+            .filter { $0.kind != .other }
+            .map { $0.isDirectory ? "smbfolder://\(host)/\($0.path)" : "smb://\(host)/\($0.path)" }
         guard !upcoming.isEmpty else { return }
         Task(priority: .utility) { await ThumbnailService.shared.warm(Array(upcoming)) }
     }
@@ -196,7 +196,7 @@ struct SmbFolderContent: View {
         let height = width * 9 / 16
         VStack(alignment: .leading, spacing: 5) {
             switch entry.kind {
-            case .folder: FolderThumbnailView(size: height, width: width)
+            case .folder: SmbFolderThumbnailView(host: host, path: entry.path, width: width, height: height)
             case .video: VideoThumbnailView(source: "smb://\(host)/\(entry.path)", size: height)
             case .image: SmbImageThumbnailView(host: host, path: entry.path, width: width, height: height)
             case .audio: AudioCoverView(source: "smb://\(host)/\(entry.path)", size: height, width: width)

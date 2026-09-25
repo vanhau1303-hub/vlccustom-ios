@@ -108,10 +108,11 @@ struct SmbEntryOptionsSheet: View {
                         UIPasteboard.general.string = source
                         show("Đã sao chép đường dẫn")
                     }
-                    if entry.kind == .video || entry.kind == .image || entry.kind == .audio {
+                    if entry.kind != .other {
                         action("Tạo lại thumbnail", icon: "arrow.clockwise") {
                             Task {
-                                await ThumbnailService.shared.forget(source: source)
+                                await ThumbnailService.shared.forget(
+                                    source: entry.isDirectory ? "smbfolder://\(host)/\(entry.path)" : source)
                                 ThumbnailEvents.shared.changed()
                                 show("Thumbnail sẽ được tạo lại")
                             }

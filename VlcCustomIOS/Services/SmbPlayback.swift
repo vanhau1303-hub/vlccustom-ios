@@ -29,6 +29,19 @@ enum SmbRoutePreferences {
     }
 }
 
+/// The per-media settings the official VLC for iOS app plays with (its app defaults, VLCAppDelegate /
+/// VLCPlaybackService.mediaOptionsDictionary) — the setup that plays TS/MKV smoothly on the same devices:
+/// - avcodec-skiploopfilter=1: skip the deblocking filter on non-reference frames — the big CPU saving when H.264 /
+///   HEVC is decoded in software (common for MKV/TS), with no visible difference;
+/// - network-caching=999ms (was 2000 here): faster start and seeks over the network;
+/// - codec left automatic: VideoToolbox hardware decoding when the stream allows it, avcodec otherwise.
+enum VLCTuning {
+    static func apply(to media: VLCMedia, network: Bool = true) {
+        media.addOption(":avcodec-skiploopfilter=1")
+        if network { media.addOption(":network-caching=999") }
+    }
+}
+
 enum SmbPlayback {
     struct Login {
         let username: String
@@ -66,8 +79,7 @@ enum SmbPlayback {
             media = VLCMedia(url: url)
             PlaybackDiagnostics.append("smb: proxy \(url.absoluteString)")
         }
-        // A bit more buffer than VLC's 1s default: Wi-Fi to a home PC jitters.
-        media.addOption(":network-caching=2000")
+        VLCTuning.apply(to: media)
         return media
     }
 }

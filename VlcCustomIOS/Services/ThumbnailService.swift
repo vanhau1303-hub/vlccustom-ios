@@ -281,6 +281,88 @@ actor ThumbnailService {
         try? data.write(to: diskURL(key))
     }
 
+    /// A folder's picture made from what is inside it: up to four of its pictures/videos in a 2×2 mosaic (one fills
+    /// the whole tile). Uses thumbnails that already exist first and makes at most two new ones, so a folder view
+    /// does not turn into dozens of SMB sessions. Folders with nothing to show get a marker and keep the plain icon.
+    func folderThumbnail(host: String, path: String) async -> UIImage? {
+        let source = "smbfolder://\(host)/\(path)"
+        if let cached = cachedThumbnail(source: source) { return cached }
+        let key = cacheKey(source)
+        let empty = diskDirectory.appendingPathComponent(key + ".none")
+        if let date = (try? FileManager.default.attributesOfItem(atPath: empty.path))?[.modificationDate] as? Date,
+           Date().timeIntervalSince(date) < 24 * 3600 { return nil } // re-check empty folders once a day
+        if await Self.videoIsPlaying() { return nil }
+        guard let connection = await SmbRegistry.shared.getOrReconnect(host),
+              let items = try? await connection.list(path: path) else { return nil }
+        let media = items.filter { $0.isImage || $0.isVideo }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .prefix(16)
+
+        var tiles: [UIImage] = []
+        var missing: [SmbEntry] = []
+        for entry in media where tiles.count < 4 {
+            if let existing = cachedThumbnail(source: "smb://\(host)/\(entry.path)") { tiles.append(existing) }
+            else { missing.append(entry) }
+        }
+        var made = 0
+        for entry in missing where tiles.count < 4 && made < 2 {
+            if Task.isCancelled { return nil }
+            let entrySource = "smb://\(host)/\(entry.path)"
+            let image = entry.isImage
+                ? await smbImageThumbnail(source: entrySource, host: host, path: entry.path)
+                : await smbVideoThumbnail(source: entrySource, host: host, path: entry.path)
+            made += 1
+            if let image { tiles.append(image) }
+        }
+        guard !tiles.isEmpty else {
+            if !media.isEmpty && made < missing.count { return nil } // not finished — try again next time
+            FileManager.default.createFile(atPath: empty.path, contents: nil)
+            return nil
+        }
+        let mosaic = Self.mosaic(tiles, size: CGSize(width: 640, height: 360))
+        remember(mosaic, key: key)
+        saveToDisk(mosaic, key: key)
+        return mosaic
+    }
+
+    private static func mosaic(_ tiles: [UIImage], size: CGSize) -> UIImage {
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.black.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            let gap: CGFloat = 4
+            let rects: [CGRect]
+            switch tiles.count {
+            case 1:
+                rects = [CGRect(origin: .zero, size: size)]
+            case 2:
+                let w = (size.width - gap) / 2
+                rects = [CGRect(x: 0, y: 0, width: w, height: size.height),
+                         CGRect(x: w + gap, y: 0, width: w, height: size.height)]
+            case 3:
+                let w = (size.width - gap) / 2, h = (size.height - gap) / 2
+                rects = [CGRect(x: 0, y: 0, width: w, height: size.height),
+                         CGRect(x: w + gap, y: 0, width: w, height: h),
+                         CGRect(x: w + gap, y: h + gap, width: w, height: h)]
+            default:
+                let w = (size.width - gap) / 2, h = (size.height - gap) / 2
+                rects = [CGRect(x: 0, y: 0, width: w, height: h), CGRect(x: w + gap, y: 0, width: w, height: h),
+                         CGRect(x: 0, y: h + gap, width: w, height: h), CGRect(x: w + gap, y: h + gap, width: w, height: h)]
+            }
+            for (tile, rect) in zip(tiles, rects) {
+                // Aspect-fill into the cell.
+                let scale = max(rect.width / tile.size.width, rect.height / tile.size.height)
+                let drawn = CGSize(width: tile.size.width * scale, height: tile.size.height * scale)
+                context.cgContext.saveGState()
+                context.cgContext.clip(to: rect)
+                tile.draw(in: CGRect(x: rect.midX - drawn.width / 2, y: rect.midY - drawn.height / 2,
+                                     width: drawn.width, height: drawn.height))
+                context.cgContext.restoreGState()
+            }
+        }
+    }
+
     /// Loads already-made thumbnails for `sources` from disk into memory (decoded), so rows about to scroll into
     /// view show theirs at once. Disk only — never starts SMB work.
     func warm(_ sources: [String]) {

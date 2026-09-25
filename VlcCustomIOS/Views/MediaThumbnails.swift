@@ -158,3 +158,39 @@ struct AudioCoverView: View {
         }
     }
 }
+
+/// An SMB folder's tile: a mosaic of what is inside (see `ThumbnailService.folderThumbnail`) with a small folder
+/// badge, or the plain folder icon while there is nothing to show.
+struct SmbFolderThumbnailView: View {
+    let host: String
+    let path: String
+    let width: CGFloat
+    let height: CGFloat
+    @State private var mosaic: UIImage?
+    @ObservedObject private var activity = PlaybackActivity.shared
+    @ObservedObject private var events = ThumbnailEvents.shared
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            if let mosaic {
+                Image(uiImage: mosaic).resizable().scaledToFill()
+                    .frame(width: width, height: height)
+                    .clipped()
+                Image(systemName: "folder.fill")
+                    .font(.system(size: max(12, height * 0.2)))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.6), radius: 3)
+                    .padding(6)
+            } else {
+                FolderThumbnailView(size: height, width: width)
+            }
+        }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .task(id: "\(path)#\(events.version)") {
+            mosaic = await ThumbnailService.shared.cachedThumbnail(source: "smbfolder://\(host)/\(path)")
+            guard mosaic == nil, !activity.isBusy else { return }
+            mosaic = await ThumbnailService.shared.folderThumbnail(host: host, path: path)
+        }
+    }
+}
