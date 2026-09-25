@@ -53,6 +53,14 @@ struct PlayerScreen: View {
                 )
                 .simultaneousGesture(playerDragGesture(in: geo.size))
 
+            if player.isLoading {
+                VStack(spacing: 10) {
+                    ProgressView().tint(.white).scaleEffect(1.4)
+                    Text("Đang mở…").font(.footnote).foregroundStyle(.white.opacity(0.85))
+                }
+                .allowsHitTesting(false)
+            }
+
             if let gestureHint {
                 Text(gestureHint)
                     .font(.headline).foregroundStyle(.white)
@@ -359,6 +367,8 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     @Published var didReachEnd = false
     @Published var showError = false
     @Published var deinterlaceOn = false
+    /// Opening / buffering before the first frame: the player shows a spinner so a slow file does not look dead.
+    @Published var isLoading = false
 
     /// `nil` means "auto" (let VLCKit pick). Cycled by the aspect-ratio button in the player toolbar.
     private static let aspectRatios: [String?] = [nil, "16:9", "4:3", "1:1", "16:10"]
@@ -374,6 +384,40 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     override init() {
         super.init()
         mediaPlayer.delegate = self
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(didEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        center.addObserver(self, selector: #selector(willEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+
+    // MARK: - Background / foreground
+    //
+    // iOS suspends the app in the background and drops its sockets: libVLC was left holding a dead SMB connection
+    // (and a video surface it may not draw to in the background), and coming back froze the player. Instead the
+    // item is stopped on the way out (position remembered) and reopened at that position on the way back in.
+
+    private var resumeAfterBackground: (item: VideoItem, timeMs: Int32, wasPlaying: Bool)?
+
+    @objc private func didEnterBackground() {
+        guard let item = PlaybackQueue.shared.current, mediaPlayer.media != nil, !mediaPlayer.isFinished || time > 0 else { return }
+        resumeAfterBackground = (item, time, mediaPlayer.isActive)
+        PlaybackDiagnostics.append("player: background — stopping at \(time)ms")
+        playGeneration += 1
+        VLCControl.stop(mediaPlayer)
+    }
+
+    @objc private func willEnterForeground() {
+        guard let resume = resumeAfterBackground else { return }
+        resumeAfterBackground = nil
+        guard resume.item == PlaybackQueue.shared.current else { return }
+        PlaybackDiagnostics.append("player: foreground — reopening at \(resume.timeMs)ms")
+        start(resume.item, resumeAtMs: max(0, resume.timeMs - 2000))
+        if !resume.wasPlaying {
+            // Was paused: show the frame at that spot, paused again.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self else { return }
+                VLCControl.pause(self.mediaPlayer)
+            }
+        }
     }
 
     deinit {
@@ -397,14 +441,17 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         start(item)
     }
 
-    private func start(_ item: VideoItem) {
+    private func start(_ item: VideoItem, resumeAtMs: Int32? = nil) {
         fallbackWork?.cancel()
         playGeneration += 1
         let generation = playGeneration
+        isLoading = true
         guard let (host, path) = SmbUri.parse(item.source) else {
             guard let local = URL(string: item.source) else { return }
             PlaybackDiagnostics.append("player: local \(item.name)")
-            VLCControl.play(mediaPlayer, media: VLCMedia(url: local))
+            let media = VLCMedia(url: local)
+            if let resumeAtMs { media.addOption(":start-time=\(Double(resumeAtMs) / 1000)") }
+            VLCControl.play(mediaPlayer, media: media)
             return
         }
         let route = smbRoute
@@ -416,15 +463,12 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
                 self.fallbackOrFail(item, reason: "could not build media")
                 return
             }
+            if let resumeAtMs { media.addOption(":start-time=\(Double(resumeAtMs) / 1000)") }
             VLCControl.play(self.mediaPlayer, media: media)
-            if route == .direct {
-                let work = DispatchWorkItem { [weak self] in
-                    guard let self, generation == self.playGeneration, self.time == 0 else { return }
-                    self.fallbackOrFail(item, reason: "direct route not playing after 20s")
-                }
-                self.fallbackWork = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: work)
-            }
+            // No "not playing after N seconds → switch route" timer any more: MP4s whose audio and video are not
+            // interleaved take a long time to start over SMB (libVLC seeks back and forth), and that timer killed
+            // them just before they started — while the fallback proxy never works against this server anyway.
+            // The proxy is only tried when libVLC reports an actual error.
         }
     }
 
@@ -546,6 +590,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     func mediaPlayerStateChanged(_ notification: Notification) {
         DispatchQueue.main.async {
             self.isPlaying = self.mediaPlayer.isActive
+            if self.mediaPlayer.state == .error || self.mediaPlayer.state == .ended { self.isLoading = false }
             PlaybackDiagnostics.append("player: state=\(self.mediaPlayer.state.rawValue)")
             switch self.mediaPlayer.state {
             case .ended: self.didReachEnd = true
@@ -562,6 +607,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             let previous = self.time
             let now = self.mediaPlayer.time.intValue
             // Republish at most ~4x/s: each change re-renders the whole player view.
+            if now > 0, self.isLoading { self.isLoading = false }
             guard abs(now - previous) >= 250 || now < previous else { return }
             self.time = now
             self.duration = self.mediaPlayer.media?.length.intValue ?? 0

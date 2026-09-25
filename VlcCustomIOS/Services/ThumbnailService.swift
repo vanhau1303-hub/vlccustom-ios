@@ -97,14 +97,21 @@ actor ThumbnailService {
     /// for every format VLC plays (MKV, AVI, HEVC...). One at a time: each is its own SMB session plus a decoder.
     func smbVideoThumbnail(source: String, host: String, path: String) async -> UIImage? {
         if let cached = cachedThumbnail(source: source) { return cached }
+        let key = cacheKey(source)
+        let noFrame = diskDirectory.appendingPathComponent(key + ".none")
+        // A file libVLC could not take a frame from is not retried on every visit (the log showed the same file
+        // re-attempted over and over, each time another SMB session hammering the server).
+        if FileManager.default.fileExists(atPath: noFrame.path) { return nil }
         await acquireSmbSlot()
         defer { releaseSmbSlot() }
-        if Task.isCancelled { return nil }
+        if Task.isCancelled || (await Self.videoIsPlaying()) { return nil }
         if let cached = cachedThumbnail(source: source) { return cached }
 
         let login = await SmbRegistry.shared.login(for: host)
         guard let cgImage = await Self.vlcSnapshot(host: host, path: path, login: login, width: 640, position: 0.1) else {
             PlaybackDiagnostics.append("thumb: VLC gave no frame for \(path)")
+            // Only remember it if nothing else was going on (a video starting mid-way can make it fail too).
+            if !(await Self.videoIsPlaying()) { FileManager.default.createFile(atPath: noFrame.path, contents: nil) }
             return nil
         }
         let image = UIImage(cgImage: cgImage)
@@ -136,7 +143,7 @@ actor ThumbnailService {
 
         await acquireSmbSlot()
         defer { releaseSmbSlot() }
-        if Task.isCancelled { return nil }
+        if Task.isCancelled || (await Self.videoIsPlaying()) { return nil }
         if let cached = cachedThumbnail(source: source) { return cached }
 
         let media: VLCMedia?
@@ -166,6 +173,13 @@ actor ThumbnailService {
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
         return media.metaData.artwork
+    }
+
+    /// A thumbnail job that was waiting for its turn must not start once a video is open: it would be another SMB
+    /// session + decoder competing with playback.
+    @MainActor
+    private static func videoIsPlaying() -> Bool {
+        PlaybackActivity.shared.isBusy
     }
 
     private var smbActive = 0

@@ -32,7 +32,16 @@ enum PlaybackDiagnostics {
         logger.level = .info
         VLCLibrary.shared().loggers = [logger]
         fileLogger = logger
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        append("=== app start v\(version), iOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
     }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
 
     static func clear() {
         writeQueue.async {
@@ -42,7 +51,8 @@ enum PlaybackDiagnostics {
 
     /// Appends one of our own (non-libVLC) lines — player route, SMB errors, etc. Serialized so lines never interleave.
     static func append(_ line: String) {
-        let text = "[app] \(line)\n"
+        // Timestamped, so a log shows how long something took (e.g. a file that is slow to start vs. stuck).
+        let text = "[app] \(timeFormatter.string(from: Date())) \(line)\n"
         guard let data = text.data(using: .utf8) else { return }
         writeQueue.async {
             handle?.write(data)
