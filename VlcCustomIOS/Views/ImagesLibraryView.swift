@@ -359,7 +359,6 @@ struct ImageViewerScreen: View {
     @State private var index: Int
     @State private var slideshow = false
     @State private var dragDown: CGFloat = 0
-    @State private var zoomed = false
 
     /// Loads the next and previous pictures ahead of the swipe.
     private func prefetch(around center: Int) {
@@ -386,29 +385,13 @@ struct ImageViewerScreen: View {
             } else {
                 TabView(selection: $index) {
                     ForEach(items.indices, id: \.self) { i in
-                        ZoomableImage(item: items[i], dataProvider: dataProvider, zoomed: $zoomed).tag(i)
+                        ZoomableImage(item: items[i], dataProvider: dataProvider,
+                                      onDismissDrag: { dragDown = $0 }, onDismiss: onClose).tag(i)
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
-                .offset(y: dragDown)
-                .scaleEffect(1 - min(0.25, dragDown / 1600))
-                // Swipe down = close and go back to the folder. Only for mostly-vertical drags, so the horizontal
-                // swipe to the next picture is untouched; off entirely while zoomed in (that drag pans the picture).
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 20)
-                        .onChanged { value in
-                            guard value.translation.height > 0, value.translation.height > abs(value.translation.width) else { return }
-                            dragDown = value.translation.height
-                        }
-                        .onEnded { value in
-                            if dragDown > 120 || (dragDown > 30 && value.predictedEndTranslation.height > 400) {
-                                onClose()
-                            } else {
-                                withAnimation(.easeOut(duration: 0.2)) { dragDown = 0 }
-                            }
-                        },
-                    including: zoomed ? .none : .all
-                )
+                // Pull-down-to-close is handled by the picture's own scroll view (it moves the picture natively);
+                // here only the background fades with it.
                 .onChange(of: index) { newIndex in prefetch(around: newIndex) }
                 .onAppear {
                     prefetch(around: index)
@@ -436,6 +419,7 @@ struct ImageViewerScreen: View {
             }
         }
         .statusBarHidden()
+        .fadeInOnAppear()
         .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
             guard slideshow, !items.isEmpty else { return }
             index = (index + 1) % items.count
@@ -446,47 +430,17 @@ struct ImageViewerScreen: View {
 private struct ZoomableImage: View {
     let item: ImageItem
     let dataProvider: (ImageItem) async -> Data?
-    /// Reported up so the viewer can switch its swipe-down-to-close off while this picture is zoomed in.
-    @Binding var zoomed: Bool
+    let onDismissDrag: (CGFloat) -> Void
+    let onDismiss: () -> Void
     @State private var image: UIImage?
     @State private var placeholder: UIImage?
-    @State private var scale: CGFloat = 1
-    @State private var lastScale: CGFloat = 1
-    @State private var offset: CGSize = .zero
-    @State private var lastOffset: CGSize = .zero
 
     var body: some View {
         Group {
             if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .scaleEffect(scale)
-                    .offset(offset)
-                    .gesture(
-                        MagnificationGesture()
-                            .onChanged { value in scale = max(1, lastScale * value) }
-                            .onEnded { _ in
-                                lastScale = scale
-                                zoomed = scale > 1
-                                if scale <= 1 { withAnimation { offset = .zero; lastOffset = .zero } }
-                            }
-                    )
-                    // Panning only exists while zoomed in. At 1x the drag gesture is switched off entirely
-                    // (`including: .none`) — merely ignoring it still swallowed the swipe, so the pager behind could
-                    // never move to the next picture.
-                    .simultaneousGesture(
-                        DragGesture()
-                            .onChanged { value in
-                                offset = CGSize(width: lastOffset.width + value.translation.width, height: lastOffset.height + value.translation.height)
-                            }
-                            .onEnded { _ in lastOffset = offset },
-                        including: scale > 1 ? .all : .none
-                    )
-                    .onTapGesture(count: 2) {
-                        withAnimation { scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero }
-                        zoomed = false
-                    }
+                // iOS's own zooming scroll view (pinch, double-tap, momentum, pull down to close).
+                ZoomingImageView(image: image, onDismissDrag: onDismissDrag, onDismiss: onDismiss)
+                    .ignoresSafeArea()
             } else if let placeholder {
                 // The grid thumbnail, shown instantly while the full picture loads.
                 Image(uiImage: placeholder).resizable().scaledToFit()

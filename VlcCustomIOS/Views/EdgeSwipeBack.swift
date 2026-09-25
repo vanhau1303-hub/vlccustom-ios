@@ -11,7 +11,8 @@ private struct EdgeSwipeBack: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .offset(x: dragX * 0.35)
+            // (The whole screen used to be offset with the finger — a full re-layout every frame. Now only the
+            // chevron below moves.)
             .overlay(alignment: .leading) {
                 if enabled {
                     Color.clear
@@ -48,7 +49,27 @@ private struct EdgeSwipeBack: ViewModifier {
     }
 }
 
+/// Full-screen player / viewer / music player open and close without iOS's slide-up-the-whole-screen animation
+/// (heavy, and it made opening feel slow); the screens fade their content in themselves (`fadeInOnAppear`).
+func withoutSlide(_ change: () -> Void) {
+    var transaction = Transaction()
+    transaction.disablesAnimations = true
+    withTransaction(transaction, change)
+}
+
+private struct FadeInOnAppear: ViewModifier {
+    @State private var visible = false
+    func body(content: Content) -> some View {
+        content
+            .opacity(visible ? 1 : 0)
+            .onAppear { withAnimation(.easeOut(duration: 0.18)) { visible = true } }
+    }
+}
+
 extension View {
+    /// Quick fade-in, for screens presented with `withoutSlide`.
+    func fadeInOnAppear() -> some View { modifier(FadeInOnAppear()) }
+
     /// Swipe from the left screen edge calls `action` (only while `enabled`).
     func edgeSwipeBack(enabled: Bool = true, action: @escaping () -> Void) -> some View {
         modifier(EdgeSwipeBack(enabled: enabled, action: action))

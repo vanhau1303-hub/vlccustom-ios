@@ -25,7 +25,7 @@ final class MusicUI: ObservableObject {
     func expand() {
         presenter = topHost
         miniBarHidden = false
-        expanded = true
+        withoutSlide { expanded = true }
     }
 
     func showMiniBar() {
@@ -44,7 +44,7 @@ final class MusicUI: ObservableObject {
     }
 
     func collapse() {
-        expanded = false
+        withoutSlide { expanded = false }
     }
 
     fileprivate func register(_ id: UUID) {

@@ -138,6 +138,7 @@ struct SmbFolderContent: View {
                         ForEach(entries) { entry in
                             gridCell(entry, width: cellWidth)
                                 .contentShape(Rectangle())
+                                .onAppear { prefetch(after: entry) }
                                 .onTapGesture { if entry.kind != .other { onOpen(entry) } }
                                 .onLongPressGesture(minimumDuration: 0.4) { showOptions(entry) }
                         }
@@ -164,12 +165,24 @@ struct SmbFolderContent: View {
                 }
                 .padding(.vertical, 4)
                 .contentShape(Rectangle())
+                .onAppear { prefetch(after: entry) }
                 // Tap = open; press and hold = the options sheet (info, favorite, playlist, copy, check the file...).
                 .onTapGesture { if entry.kind != .other { onOpen(entry) } }
                 .onLongPressGesture(minimumDuration: 0.4) { showOptions(entry) }
             }
             .listStyle(.plain)
         }
+    }
+
+    /// When a cell appears, warm the thumbnails of the next dozen entries (disk → memory), so scrolling on shows
+    /// them immediately instead of blank boxes filling in.
+    private func prefetch(after entry: SmbEntry) {
+        guard let index = entries.firstIndex(of: entry) else { return }
+        let upcoming = entries[(index + 1)..<min(entries.count, index + 13)]
+            .filter { $0.kind == .video || $0.kind == .image || $0.kind == .audio }
+            .map { "smb://\(host)/\($0.path)" }
+        guard !upcoming.isEmpty else { return }
+        Task(priority: .utility) { await ThumbnailService.shared.warm(Array(upcoming)) }
     }
 
     private func showOptions(_ entry: SmbEntry) {

@@ -19,6 +19,7 @@ struct MusicPlayerScreen: View {
                 // Swipe down on the left half = collapse to the mini bar (the music keeps playing);
                 // swipe up/down on the right half = volume, like the video player.
                 .offset(y: dragDown)
+                .fadeInOnAppear()
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 20)
                         .onChanged { value in

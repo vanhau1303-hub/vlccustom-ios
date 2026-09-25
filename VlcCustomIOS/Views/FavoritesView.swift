@@ -28,10 +28,10 @@ struct FavoritesView: View {
             }
             .navigationTitle("Yêu thích")
             .fullScreenCover(isPresented: $playing) {
-                PlayerScreen(onClose: { playing = false })
+                PlayerScreen(onClose: { withoutSlide { playing = false } })
             }
             .fullScreenCover(item: $viewer) { target in
-                ImageViewerScreen(items: target.items, startIndex: target.index, dataProvider: SmbImageLoader.viewerData, onClose: { viewer = nil })
+                ImageViewerScreen(items: target.items, startIndex: target.index, dataProvider: SmbImageLoader.viewerData, onClose: { withoutSlide { viewer = nil } })
             }
             .onAppear { favorites = FavoritesStore.load() }
             .onChange(of: navigator.favoritesVersion) { _ in favorites = FavoritesStore.load() }
@@ -64,8 +64,8 @@ struct FavoritesView: View {
         }
         let file = entry(for: favorite)
         switch SmbOpener.open(file, siblings: [file], host: favorite.host, label: favorite.title) {
-        case .video: playing = true
-        case .images(let items, let index): viewer = ImageViewerTarget(items: items, index: index)
+        case .video: withoutSlide { playing = true }
+        case .images(let items, let index): withoutSlide { viewer = ImageViewerTarget(items: items, index: index) }
         case .audio, .folder, .none: break
         }
     }

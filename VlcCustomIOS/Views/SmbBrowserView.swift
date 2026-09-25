@@ -79,10 +79,10 @@ struct SmbBrowserView: View {
                 ToolbarItem(placement: .primaryAction) { SortMenu(sort: $sort) }
             }
             .fullScreenCover(item: $playing) { _ in
-                PlayerScreen(onClose: { playing = nil })
+                PlayerScreen(onClose: { withoutSlide { playing = nil } })
             }
             .fullScreenCover(item: $viewer) { target in
-                ImageViewerScreen(items: target.items, startIndex: target.index, dataProvider: SmbImageLoader.viewerData, onClose: { viewer = nil })
+                ImageViewerScreen(items: target.items, startIndex: target.index, dataProvider: SmbImageLoader.viewerData, onClose: { withoutSlide { viewer = nil } })
             }
             .confirmationDialog("Thêm vào playlist", isPresented: Binding(get: { addingToPlaylist != nil }, set: { if !$0 { addingToPlaylist = nil } }), titleVisibility: .visible) {
                 ForEach(playlists) { playlist in
@@ -325,9 +325,9 @@ struct SmbBrowserView: View {
             path = newPath
             Task { await load() }
         case .video:
-            playing = entry
+            withoutSlide { playing = entry }
         case .images(let items, let index):
-            viewer = ImageViewerTarget(items: items, index: index)
+            withoutSlide { viewer = ImageViewerTarget(items: items, index: index) }
         case .audio, .none:
             break
         }

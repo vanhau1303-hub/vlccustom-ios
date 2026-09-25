@@ -281,6 +281,16 @@ actor ThumbnailService {
         try? data.write(to: diskURL(key))
     }
 
+    /// Loads already-made thumbnails for `sources` from disk into memory (decoded), so rows about to scroll into
+    /// view show theirs at once. Disk only — never starts SMB work.
+    func warm(_ sources: [String]) {
+        for source in sources {
+            let key = cacheKey(source)
+            guard memoryCache.object(forKey: key as NSString) == nil, let image = loadFromDisk(key) else { continue }
+            remember(image, key: key)
+        }
+    }
+
     /// Drops one entry's thumbnail (and its "no frame / no cover" marker) so it is made again.
     func forget(source: String) {
         let key = cacheKey(source)

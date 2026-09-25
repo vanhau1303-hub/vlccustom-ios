@@ -16,7 +16,9 @@ struct PlayerScreen: View {
     @State private var showTrackPicker = false
     @State private var showPictureControls = false
     @State private var showSpeechDialog = false
-    @StateObject private var live = LiveSubtitles.shared
+    /// Not observed here: the subtitle overlay and status badge observe it themselves, so a new cue or status does
+    /// not re-render the whole player (video surface, gesture layer, controls).
+    private let live = LiveSubtitles.shared
 
     // Gesture state — mirrors the Android player: horizontal drag seeks, vertical drag on the left half adjusts
     // screen brightness and on the right half adjusts VLC's own volume, double-tap on either side skips ±30s and
@@ -69,37 +71,11 @@ struct PlayerScreen: View {
                     .clipShape(Capsule())
             }
 
-            VStack {
-                Spacer()
-                if let cue = live.activeCue(at: Int(player.time)) {
-                    Text(cue.text)
-                        .multilineTextAlignment(.center)
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Color.black.opacity(0.65))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .padding(.horizontal, 24)
-                }
-            }
-            .padding(.bottom, showControls ? 230 : 28)
-            .allowsHitTesting(false)
-
-            if let status = live.running ? live.status : live.translationNote {
-                VStack {
-                    HStack {
-                        Text("🎙 \(status)")
-                            .font(.caption).foregroundStyle(.white)
-                            .padding(.horizontal, 10).padding(.vertical, 5)
-                            .background(Color.black.opacity(0.6))
-                            .clipShape(Capsule())
-                        Spacer()
-                    }
-                    .padding(.top, 60).padding(.horizontal)
-                    Spacer()
-                }
+            LiveCueOverlay(clock: player.clock, live: live)
+                .padding(.bottom, showControls ? 230 : 28)
                 .allowsHitTesting(false)
-            }
+
+            LiveStatusBadge(live: live)
 
             if showControls {
                 VStack(spacing: 0) {
@@ -120,8 +96,7 @@ struct PlayerScreen: View {
 
                     VStack(spacing: 14) {
                         HStack(spacing: 10) {
-                            Text(format(player.time)).foregroundStyle(.white).font(.caption).monospacedDigit()
-                            SeekBar(progress: seeking ? sliderValue : player.progress,
+                            PlayerTimeRow(clock: player.clock, seeking: seeking, sliderValue: sliderValue,
                                     onScrub: { fraction in
                                         seeking = true
                                         sliderValue = fraction
@@ -134,7 +109,6 @@ struct PlayerScreen: View {
                                         // Hold the new position until VLC reports it, instead of snapping back.
                                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { seeking = false }
                                     })
-                            Text(format(player.duration)).foregroundStyle(.white).font(.caption).monospacedDigit()
                         }
                         HStack(spacing: 36) {
                             transportButton("backward.end.fill", size: 22) { queue.movePrevious(); player.playCurrent() }
@@ -185,6 +159,7 @@ struct PlayerScreen: View {
             }
         }
         .statusBarHidden()
+        .fadeInOnAppear()
         .onAppear {
             MusicUI.shared.videoOpened()
             player.playCurrent(); PlaybackActivity.shared.isBusy = true; keepControlsVisible()
@@ -370,8 +345,11 @@ struct PlayerScreen: View {
 final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     let mediaPlayer = VLCMediaPlayer()
     @Published var isPlaying = false
-    @Published var time: Int32 = 0
-    @Published var duration: Int32 = 0
+    /// Not @Published: every change used to re-render the entire player 4×/s. The few views that show time observe
+    /// `clock` instead; everything else reads these on demand (gestures, background resume...).
+    var time: Int32 = 0 { didSet { if clock.time != time { clock.time = time } } }
+    var duration: Int32 = 0 { didSet { if clock.duration != duration { clock.duration = duration } } }
+    let clock = PlaybackClock()
     @Published var didReachEnd = false
     @Published var showError = false
     @Published var deinterlaceOn = false
@@ -817,5 +795,79 @@ struct PlayQueueSheet: View {
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+/// Current playback time for the few views that display it.
+final class PlaybackClock: ObservableObject {
+    @Published var time: Int32 = 0
+    @Published var duration: Int32 = 0
+    var progress: Double { duration > 0 ? Double(time) / Double(duration) : 0 }
+}
+
+/// Elapsed / seek bar / total — the only part of the controls that changes several times a second.
+private struct PlayerTimeRow: View {
+    @ObservedObject var clock: PlaybackClock
+    let seeking: Bool
+    let sliderValue: Double
+    let onScrub: (Double) -> Void
+    let onCommit: (Double) -> Void
+
+    var body: some View {
+        Text(Self.format(seeking ? Int32(sliderValue * Double(clock.duration)) : clock.time))
+            .foregroundStyle(.white).font(.caption).monospacedDigit()
+        SeekBar(progress: seeking ? sliderValue : clock.progress, onScrub: onScrub, onCommit: onCommit)
+        Text(Self.format(clock.duration)).foregroundStyle(.white).font(.caption).monospacedDigit()
+    }
+
+    static func format(_ ms: Int32) -> String {
+        let total = max(0, Int(ms) / 1000)
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
+    }
+}
+
+/// The AI subtitle line on screen, following the clock.
+private struct LiveCueOverlay: View {
+    @ObservedObject var clock: PlaybackClock
+    @ObservedObject var live: LiveSubtitles
+
+    var body: some View {
+        VStack {
+            Spacer()
+            if let cue = live.activeCue(at: Int(clock.time)) {
+                Text(cue.text)
+                    .multilineTextAlignment(.center)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Color.black.opacity(0.65))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .padding(.horizontal, 24)
+            }
+        }
+    }
+}
+
+/// "🎙 Đang nhận dạng…" / translation queue note, top-left.
+private struct LiveStatusBadge: View {
+    @ObservedObject var live: LiveSubtitles
+
+    var body: some View {
+        if let status = live.running ? live.status : live.translationNote {
+            VStack {
+                HStack {
+                    Text("🎙 \(status)")
+                        .font(.caption).foregroundStyle(.white)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Color.black.opacity(0.6))
+                        .clipShape(Capsule())
+                    Spacer()
+                }
+                .padding(.top, 60).padding(.horizontal)
+                Spacer()
+            }
+            .allowsHitTesting(false)
+        }
     }
 }
