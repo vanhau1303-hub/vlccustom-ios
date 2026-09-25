@@ -44,6 +44,16 @@ private struct Coverage {
         return min(cursor, limit)
     }
 
+    /// The first uncovered millisecond at or after `from` (nil if everything from there to `limit` is done).
+    func nextGap(from: Int, limit: Int) -> Int? {
+        var cursor = max(0, from)
+        for span in spans where span.1 > cursor {
+            if span.0 > cursor { break }
+            cursor = span.1
+        }
+        return cursor < limit ? cursor : nil
+    }
+
     func serialized() -> String {
         spans.map { "\($0.0)-\($0.1)" }.joined(separator: ",")
     }
@@ -52,7 +62,8 @@ private struct Coverage {
 /// Generates subtitles from a video's own audio track on-device (WhisperKit/Core ML), optionally translated, and
 /// exposes the growing cue list for the player to overlay. A scoped equivalent of the Android app's `LiveSubtitles`:
 /// same windowed-recognition-with-resumable-coverage design, simplified to a single engine (WhisperKit; there is no
-/// iOS build of Moonshine) and a single always-forward-from-the-first-gap scan (no lookahead-idle/seek-biasing).
+/// iOS build of Moonshine). Work follows the playhead (a seek moves recognition there on the next window), the next
+/// window's audio is extracted while the current one is recognized, and translation runs in batches in the background.
 @MainActor
 final class LiveSubtitles: ObservableObject {
     static let shared = LiveSubtitles()
@@ -64,6 +75,10 @@ final class LiveSubtitles: ObservableObject {
     /// Lines recognized but not translated yet (translation service out of quota / offline), e.g.
     /// "Còn 12 câu chưa dịch — tự dịch tiếp lúc 14:05". Nil when nothing is waiting.
     @Published private(set) var translationNote: String?
+
+    /// Where the video currently is — set by the player, so recognition follows seeks instead of plodding on from
+    /// the start of the file.
+    var playheadProvider: (() -> Int)?
 
     private static let windowMs = 30_000
     private static let silenceRms: Float = 150.0 / 32768.0
@@ -155,68 +170,89 @@ final class LiveSubtitles: ObservableObject {
             return
         }
 
-        var cursor = coverage.firstGap(limit: durationMs)
-        while running, !Task.isCancelled, cursor < durationMs {
-            status = "Đang nhận dạng giọng nói… (\(cursor / 1000)s / \(durationMs / 1000)s)"
-            let length = min(Self.windowMs, durationMs - cursor)
-            do {
-                // SMB: libVLC transcodes the window itself (any format, over its own SMB2 module). Local files keep
-                // AVAssetReader, which reads them directly.
-                let samples: [Float]
+        // Audio for one window, extracted ahead of time while the previous window is being recognized.
+        func extract(_ startMs: Int, _ length: Int) -> Task<[Float], Error> {
+            Task { @MainActor in
                 if let smb {
-                    samples = try await VlcAudioExtractor.extract(host: smb.host, path: smb.path, login: login,
-                                                                  startMs: cursor, durationMs: length)
-                } else {
-                    samples = try await AudioPcmExtractor.extract(url: localURL!, startMs: cursor, durationMs: length)
+                    return try await VlcAudioExtractor.extract(host: smb.host, path: smb.path, login: login,
+                                                               startMs: startMs, durationMs: length)
                 }
-                guard !samples.isEmpty else {
+                return try await AudioPcmExtractor.extract(url: localURL!, startMs: startMs, durationMs: length)
+            }
+        }
+        var prefetched: (start: Int, length: Int, task: Task<[Float], Error>)?
+
+        while running, !Task.isCancelled {
+            // Always work where the viewer is: the first gap at (slightly before) the playhead — a seek moves the
+            // work there on the very next window. Only once everything ahead is done are earlier gaps filled in.
+            let playhead = playheadProvider?() ?? 0
+            guard let cursor = coverage.nextGap(from: max(0, playhead - 2_000), limit: durationMs)
+                ?? coverage.nextGap(from: 0, limit: durationMs) else { break }
+            let length = min(Self.windowMs, durationMs - cursor)
+            status = "Đang nhận dạng giọng nói… (\(Self.clock(cursor)) / \(Self.clock(durationMs)))"
+
+            let audio: Task<[Float], Error>
+            if let prefetched, prefetched.start == cursor, prefetched.length == length {
+                audio = prefetched.task
+            } else {
+                prefetched?.task.cancel()
+                audio = extract(cursor, length)
+            }
+            prefetched = nil
+
+            do {
+                let samples = try await audio.value
+
+                // Start pulling the next window's audio now, so it is ready when recognition of this one ends.
+                let nextStart = cursor + length
+                if nextStart < durationMs, coverage.nextGap(from: nextStart, limit: durationMs) == nextStart {
+                    let nextLength = min(Self.windowMs, durationMs - nextStart)
+                    prefetched = (nextStart, nextLength, extract(nextStart, nextLength))
+                }
+
+                if samples.isEmpty || rms(samples) < Self.silenceRms {
                     coverage.mark(cursor, cursor + length)
                     persist()
-                    cursor += length
-                    continue
-                }
-                if rms(samples) < Self.silenceRms {
-                    coverage.mark(cursor, cursor + length)
-                    persist()
-                    cursor += length
                     continue
                 }
 
                 // skipSpecialTokens: without it every segment's text carried Whisper's control tokens
                 // ("<|startoftranscript|><|vi|><|0.00|>…") — the "code" that showed up instead of subtitles.
-                let options = DecodingOptions(task: .transcribe, language: language, skipSpecialTokens: true, noSpeechThreshold: 0.6)
+                // temperatureFallbackCount 2 (default 5): hard-to-hear windows no longer get decoded 6 times over.
+                let options = DecodingOptions(task: .transcribe, language: language, temperatureFallbackCount: 2,
+                                              skipSpecialTokens: true, noSpeechThreshold: 0.6)
                 let results = try await whisper.transcribe(audioArray: samples, decodeOptions: options)
 
-                var advanced = length
                 if let segments = results.first?.segments, !segments.isEmpty {
-                    var lastEndMs = 0
                     for segment in segments {
                         let text = cleanText(segment.text)
                         guard !text.isEmpty else { continue }
                         let startMs = cursor + Int(segment.start * 1000)
                         let recognizedEndMs = cursor + Int(segment.end * 1000)
                         let endMs = SubtitleLayout.endFor(startMs: startMs, recognizedEndMs: recognizedEndMs, text: text)
-
-                        // Shown in the original language right away; translated in place when the translation
-                        // comes back — or later, if the translation service is out of quota for now.
+                        // Shown in the original language right away; translated in place by the background
+                        // translation queue (batched), without holding up recognition of the next window.
+                        cues.removeAll { $0.startMs == startMs }
                         cues.append(LiveCue(startMs: startMs, endMs: endMs, text: SubtitleLayout.wrap(text)))
-                        if self.translateTo != nil {
-                            pending[startMs] = text
-                            await translatePendingNow(limit: 1, only: startMs)
-                        }
-                        lastEndMs = max(lastEndMs, Int(segment.end * 1000))
+                        if self.translateTo != nil { pending[startMs] = text }
                     }
                     cues.sort { $0.startMs < $1.startMs }
-                    if lastEndMs > 0 { advanced = lastEndMs }
                 }
-                coverage.mark(cursor, cursor + advanced)
+                // Whole windows, back to back: the next window's audio is already being extracted from exactly
+                // cursor + length, so it can be used as is.
+                coverage.mark(cursor, cursor + length)
                 persist()
-                cursor += advanced
+                if self.translateTo != nil {
+                    savePending()
+                    startDrainingIfNeeded()
+                }
             } catch {
+                if Task.isCancelled { break }
                 errorMessage = "Lỗi nhận dạng: \(error.localizedDescription)"
                 break
             }
         }
+        prefetched?.task.cancel()
         status = nil
         running = false
         startDrainingIfNeeded()
@@ -224,34 +260,56 @@ final class LiveSubtitles: ObservableObject {
 
     // MARK: - Translation queue
 
-    /// Tries to translate queued cues (all, or just `only`) unless the service asked us to wait.
-    private func translatePendingNow(limit: Int = .max, only: Int? = nil) async {
-        guard let translateTo else { return }
+    /// Translates queued lines in batches (one request for up to `batchSize` lines, instead of one per line),
+    /// nearest to the playhead first, unless the service asked us to wait.
+    private func translatePendingNow(batchSize: Int = 12) async {
+        guard let translateTo, !pending.isEmpty else { return }
         if let pausedUntil, pausedUntil > Date() { updateTranslationNote(); return }
-        let keys = only.map { [$0] } ?? pending.keys.sorted()
-        var done = 0
-        for start in keys {
-            guard done < limit, !Task.isCancelled, let original = pending[start] else { continue }
-            do {
-                let translated = try await SubtitleTranslator.translate(
-                    original, from: sourceLanguage ?? "auto", to: translateTo,
-                    serverURL: SpeechSettings.shared.libreTranslateServer)
+        let playhead = playheadProvider?() ?? 0
+        // Ahead of the playhead first (closest first), then whatever lies behind it.
+        let keys = pending.keys.sorted { a, b in
+            let aAhead = a >= playhead - 5_000, bAhead = b >= playhead - 5_000
+            if aAhead != bAhead { return aAhead }
+            return abs(a - playhead) < abs(b - playhead)
+        }
+        let batch = Array(keys.prefix(batchSize)).sorted()
+        let originals = batch.compactMap { pending[$0] }
+        guard originals.count == batch.count else { return }
+        do {
+            let translations = try await translateBatch(originals, to: translateTo)
+            for (start, (original, translated)) in zip(batch, zip(originals, translations)) {
                 apply(translated, original: original, to: start)
                 pending[start] = nil
-                backoffSeconds = 60
-                done += 1
-            } catch {
-                // Out of quota or offline: keep the line queued and come back later, backing off up to 15 minutes.
-                let rateLimited = (error as? SubtitleTranslator.TranslateError)?.isRateLimited ?? false
-                PlaybackDiagnostics.append("translate: \(error.localizedDescription) — retry in \(Int(backoffSeconds))s")
-                pausedUntil = Date().addingTimeInterval(backoffSeconds)
-                backoffSeconds = min(rateLimited ? backoffSeconds * 2 : backoffSeconds * 1.5, 900)
-                break
             }
+            backoffSeconds = 60
+        } catch {
+            // Out of quota or offline: keep the lines queued and come back later, backing off up to 15 minutes.
+            let rateLimited = (error as? SubtitleTranslator.TranslateError)?.isRateLimited ?? false
+            PlaybackDiagnostics.append("translate: \(error.localizedDescription) — retry in \(Int(backoffSeconds))s")
+            pausedUntil = Date().addingTimeInterval(backoffSeconds)
+            backoffSeconds = min(rateLimited ? backoffSeconds * 2 : backoffSeconds * 1.5, 900)
         }
         savePending()
         persist()
         updateTranslationNote()
+    }
+
+    /// One request for several lines, joined by newlines; falls back to one request per line if the service does
+    /// not give back the same number of lines.
+    private func translateBatch(_ lines: [String], to target: String) async throws -> [String] {
+        let server = SpeechSettings.shared.libreTranslateServer
+        let from = sourceLanguage ?? "auto"
+        if lines.count > 1 {
+            let clean = lines.map { $0.replacingOccurrences(of: "\n", with: " ") }
+            let joined = try await SubtitleTranslator.translate(clean.joined(separator: "\n"), from: from, to: target, serverURL: server)
+            let parts = joined.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            if parts.count == lines.count { return parts }
+        }
+        var result: [String] = []
+        for line in lines {
+            result.append(try await SubtitleTranslator.translate(line, from: from, to: target, serverURL: server))
+        }
+        return result
     }
 
     private func apply(_ translated: String, original: String, to start: Int) {
@@ -267,10 +325,10 @@ final class LiveSubtitles: ObservableObject {
         guard drainTask == nil, translateTo != nil, !pending.isEmpty else { return }
         drainTask = Task { [weak self] in
             while let self, !Task.isCancelled, !self.pending.isEmpty {
-                let wait = max(2, self.pausedUntil.map { $0.timeIntervalSinceNow } ?? 2)
+                let wait = max(0.2, self.pausedUntil.map { $0.timeIntervalSinceNow } ?? 0.2)
                 try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                 if Task.isCancelled { break }
-                await self.translatePendingNow(limit: 20)
+                await self.translatePendingNow()
             }
             self?.drainTask = nil
         }
@@ -303,6 +361,12 @@ final class LiveSubtitles: ObservableObject {
         var result: [Int: String] = [:]
         for (key, value) in dict { if let start = Int(key) { result[start] = value } }
         return result
+    }
+
+    private static func clock(_ ms: Int) -> String {
+        let total = ms / 1000
+        return total >= 3600 ? String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
+                             : String(format: "%d:%02d", total / 60, total % 60)
     }
 
     private func persist() {

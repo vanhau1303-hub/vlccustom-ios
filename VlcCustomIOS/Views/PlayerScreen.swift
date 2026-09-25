@@ -182,6 +182,8 @@ struct PlayerScreen: View {
         .onAppear {
             MusicUI.shared.videoOpened()
             player.playCurrent(); PlaybackActivity.shared.isBusy = true; keepControlsVisible()
+            // AI subtitles follow the playhead (seeks included).
+            live.playheadProvider = { [weak player] in Int(player?.time ?? 0) }
         }
         .onDisappear {
             player.stop(); live.stop(); PlaybackActivity.shared.isBusy = false
