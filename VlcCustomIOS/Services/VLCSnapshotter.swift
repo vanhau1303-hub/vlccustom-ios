@@ -41,7 +41,7 @@ final class VLCSnapshotter: @unchecked Sendable {
     // MARK: - Blocking implementation (background thread only)
 
     private static func grab(location: String, options: [String], maxWidth: Int, position: Float, timeout: TimeInterval) -> CGImage? {
-        guard let instance = VLCLibrary.shared().instance else { return nil }
+        let instance = VLCLibrary.shared().instance
         let startGeneration = generation
         let cancelled = { generation != startGeneration }
 
