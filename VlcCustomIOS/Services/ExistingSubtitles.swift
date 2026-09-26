@@ -233,8 +233,12 @@ final class MkvSubtitleParser: @unchecked Sendable {
     private let headerOnly: Bool
     private var done = false
 
-    private var buffer = Data()
-    private var bufferStart: Int64 = 0 // file offset of buffer[0]
+    // Unread bytes are bytes[cursor...]. (A Data buffer trimmed with removeFirst kept its old indices — slicing it
+    // from 0 read out of bounds and crashed the app — and every removeFirst moved the whole multi-MB rest.)
+    private var bytes: [UInt8] = []
+    private var cursor = 0
+    private var bufferStart: Int64 = 0 // file offset of bytes[cursor]
+    private var available: Int { bytes.count - cursor }
     private var skip: Int64 = 0
 
     private struct Open { let id: UInt32; let end: Int64 }
@@ -276,21 +280,24 @@ final class MkvSubtitleParser: @unchecked Sendable {
             chunk = chunk.dropFirst(n)
             if chunk.isEmpty { return }
         }
-        buffer.append(chunk)
+        if cursor > 0 && (cursor > 4 << 20 || cursor == bytes.count) {
+            bytes.removeFirst(cursor) // compact now and then, not on every consumed element
+            cursor = 0
+        }
+        bytes.append(contentsOf: chunk)
         parse()
     }
 
     private var position: Int64 { bufferStart }
 
     private func consume(_ n: Int) {
-        buffer.removeFirst(n)
+        cursor += n
         bufferStart += Int64(n)
-        if buffer.isEmpty { buffer = Data() }
     }
 
     /// Skips `n` bytes: whatever is buffered now, the rest as it streams in.
     private func skipBytes(_ n: Int64) {
-        let now = Int(min(n, Int64(buffer.count)))
+        let now = Int(min(n, Int64(available)))
         consume(now)
         skip = n - Int64(now)
     }
@@ -338,19 +345,19 @@ final class MkvSubtitleParser: @unchecked Sendable {
                 continue
             }
             if Self.smallLeaves.contains(id), size <= 4096 {
-                guard buffer.count >= header + Int(size) else { return }
-                let payload = buffer.subdata(in: header..<(header + Int(size)))
+                guard available >= header + Int(size) else { return }
+                let payload = slice(header, Int(size))
                 consume(header + Int(size))
                 leaf(id, payload)
                 continue
             }
             if (id == Self.simpleBlock || id == Self.block), !headerOnly, !unknownSize {
                 // Track number is the first vint of the block: decide from it whether to keep or skip.
-                guard buffer.count >= header + min(Int(size), 8) else { return }
+                guard available >= header + min(Int(size), 8) else { return }
                 let track = vint(at: header).map { Int($0.value) } ?? -1
                 if track == wantedTrack, size < 2_000_000 {
-                    guard buffer.count >= header + Int(size) else { return }
-                    let payload = buffer.subdata(in: header..<(header + Int(size)))
+                    guard available >= header + Int(size) else { return }
+                    let payload = slice(header, Int(size))
                     consume(header + Int(size))
                     block(payload, simple: id == Self.simpleBlock)
                 } else {
@@ -368,10 +375,10 @@ final class MkvSubtitleParser: @unchecked Sendable {
 
     private func leaf(_ id: UInt32, _ payload: Data) {
         switch id {
-        case Self.timecodeScaleID: timecodeScale = max(1, Int64(uint(payload)))
-        case Self.timecode: clusterTime = Int64(uint(payload))
-        case Self.trackNumber: currentTrack.number = Int(uint(payload))
-        case Self.trackType: currentTrack.type = Int(uint(payload))
+        case Self.timecodeScaleID: timecodeScale = max(1, Int64(clamping: uint(payload)))
+        case Self.timecode: clusterTime = Int64(clamping: uint(payload))
+        case Self.trackNumber: currentTrack.number = Int(clamping: uint(payload))
+        case Self.trackType: currentTrack.type = Int(clamping: uint(payload))
         case Self.codecID: currentTrack.codec = string(payload)
         case Self.language: currentTrack.language = string(payload)
         case Self.name: currentTrack.name = string(payload)
@@ -384,7 +391,7 @@ final class MkvSubtitleParser: @unchecked Sendable {
         case Self.compSettings:
             currentTrack.compression = .headerStripping(payload)
         case Self.blockDuration:
-            pendingDuration = Int64(uint(payload))
+            pendingDuration = Int64(clamping: uint(payload))
         default: break
         }
     }
@@ -408,8 +415,13 @@ final class MkvSubtitleParser: @unchecked Sendable {
     private func flushPending() {
         guard let pending else { return }
         self.pending = nil
-        let startMs = Int(pending.start * timecodeScale / 1_000_000)
-        let endMs = pendingDuration.map { startMs + Int($0 * timecodeScale / 1_000_000) } ?? 0
+        let scale = Double(timecodeScale) / 1_000_000
+        func ms(_ ticks: Int64) -> Int {
+            let value = Double(ticks) * scale
+            return value.isFinite ? Int(max(-1e12, min(1e12, value))) : 0
+        }
+        let startMs = ms(pending.start)
+        let endMs = pendingDuration.map { startMs + ms($0) } ?? 0
         pendingDuration = nil
         let track = tracks.first { $0.number == wantedTrack }
         var data = pending.data
@@ -435,12 +447,13 @@ final class MkvSubtitleParser: @unchecked Sendable {
 
     private func readID() -> (UInt32, Int)? {
         // Not an element start (corrupt data): move on byte by byte until one is.
-        while let first = buffer.first, first < 0x10 { consume(1) }
-        guard let first = buffer.first else { return nil }
+        while available > 0, bytes[cursor] < 0x10 { consume(1) }
+        guard available > 0 else { return nil }
+        let first = bytes[cursor]
         let length = first >= 0x80 ? 1 : first >= 0x40 ? 2 : first >= 0x20 ? 3 : 4
-        guard buffer.count >= length else { return nil }
+        guard available >= length else { return nil }
         var id: UInt32 = 0
-        for i in 0..<length { id = id << 8 | UInt32(buffer[buffer.startIndex + i]) }
+        for i in 0..<length { id = id << 8 | UInt32(bytes[cursor + i]) }
         return (id, length)
     }
 
@@ -451,16 +464,25 @@ final class MkvSubtitleParser: @unchecked Sendable {
     }
 
     private func vint(at offset: Int, in data: Data? = nil) -> (value: UInt64, length: Int)? {
-        let source = data ?? buffer
-        guard source.count > offset else { return nil }
-        let first = source[source.startIndex + offset]
+        let count = data?.count ?? available
+        func byte(_ i: Int) -> UInt8 {
+            if let data { return data[data.startIndex + i] }
+            return bytes[cursor + i]
+        }
+        guard count > offset else { return nil }
+        let first = byte(offset)
         var length = 1
         var mask: UInt8 = 0x80
         while length <= 8, first & mask == 0 { length += 1; mask >>= 1 }
-        guard length <= 8, source.count >= offset + length else { return nil }
+        guard length <= 8, count >= offset + length else { return nil }
         var value = UInt64(first & (mask &- 1))
-        for i in 1..<length { value = value << 8 | UInt64(source[source.startIndex + offset + i]) }
+        for i in 1..<length { value = value << 8 | UInt64(byte(offset + i)) }
         return (value, length)
+    }
+
+    /// `length` unread bytes starting `offset` bytes after the cursor, as a fresh (0-indexed) Data.
+    private func slice(_ offset: Int, _ length: Int) -> Data {
+        Data(bytes[(cursor + offset)..<(cursor + offset + length)])
     }
 
     private func uint(_ data: Data) -> UInt64 {
