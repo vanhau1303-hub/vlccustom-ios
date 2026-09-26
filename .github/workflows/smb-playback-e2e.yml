@@ -141,8 +141,9 @@ jobs:
             SIMCTL_CHILD_DEMO_SMB_PASS="testpass" \
             SIMCTL_CHILD_DEMO_SMB_FILE="$CLIP" \
             SIMCTL_CHILD_DEMO_SMB_ROUTE="$ROUTE" \
+            SIMCTL_CHILD_DEMO_SMB_THUMB=1 \
               xcrun simctl launch "$DEVICE_ID" com.vlccustom.ios
-            sleep 12
+            sleep 30
             xcrun simctl io "$DEVICE_ID" screenshot "e2e/${TAG}_12s.png"
             sleep 13
             xcrun simctl io "$DEVICE_ID" screenshot "e2e/${TAG}_25s.png"
@@ -155,6 +156,11 @@ jobs:
             OPEN=$(grep -m1 -E 'player: .* route=' "e2e/${TAG}.log" | awk '{print $2}')
             FIRST=$(grep -m1 -E 'player: time=[0-9]+ms' "e2e/${TAG}.log" | awk '{print $2}')
             echo "opened at $OPEN, first playback time reported at $FIRST"
+            grep -hE 'demo: thumb' "e2e/${TAG}.log" || echo "demo: thumb (no result logged)"
+            if ! grep -q 'demo: thumb ok' "e2e/${TAG}.log" && [ "$REQUIRED" = "1" ]; then
+              echo "FAIL: $CLIP [$ROUTE] thumbnail"
+              FAILED=1
+            fi
             if grep -q 'retrying via' "e2e/${TAG}.log"; then
               echo "FAIL: $CLIP [$ROUTE] failed and the app switched routes"
               if [ "$REQUIRED" = "1" ]; then FAILED=1; fi

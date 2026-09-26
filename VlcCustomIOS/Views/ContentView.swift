@@ -41,6 +41,16 @@ struct ContentView: View {
         let item = VideoItem(name: (file as NSString).lastPathComponent, source: "smb://\(host)/\(file)",
                              sizeBytes: 0, lastModified: .distantPast)
         SmbRoutePreferences.set(item.source, proxy: env["DEMO_SMB_ROUTE"] == "proxy")
+        // CI: grab a thumbnail frame first (VLCSnapshotter), over the requested route, and log the result.
+        if env["DEMO_SMB_THUMB"] == "1" {
+            let login = await SmbRegistry.shared.login(for: host)
+            let started = Date()
+            let image = await ThumbnailService.vlcSnapshot(host: host, path: file, login: login, width: 640, position: 0.1,
+                                                           route: env["DEMO_SMB_ROUTE"] == "proxy" ? .proxy : .direct)
+            let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
+            PlaybackDiagnostics.append(image.map { "demo: thumb ok \($0.width)x\($0.height) in \(seconds)s" }
+                                       ?? "demo: thumb FAILED after \(seconds)s")
+        }
         PlaybackQueue.shared.start([item], index: 0, label: "demo")
         demoPlaying = true
     }
