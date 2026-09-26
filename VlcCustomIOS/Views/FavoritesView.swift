@@ -86,7 +86,11 @@ final class AppNavigator: ObservableObject {
         let path: String
     }
 
-    @Published var selectedTab = 1
+    @Published var selectedTab = ResumeStore.tab ?? 1 {
+        didSet { ResumeStore.tab = selectedTab }
+    }
+    /// Position to reopen the next video at (restored after iOS closed the app while it was playing).
+    var pendingResumeMs: (source: String, ms: Int32)?
     @Published var smbJump: SmbJump?
     /// Bumped whenever favorites change elsewhere, so the Yêu thích list reloads.
     @Published private(set) var favoritesVersion = 0

@@ -94,7 +94,21 @@ struct SmbBrowserView: View {
             .task {
                 savedProfiles = SmbServerStore.load()
                 playlists = PlaylistStore.video.load()
-                if let jump = navigator.smbJump { await open(jump) }
+                if let jump = navigator.smbJump {
+                    await open(jump)
+                } else if connection == nil, let last = ResumeStore.folder {
+                    // Relaunched (e.g. iOS closed the app in the background): back to the same folder…
+                    await open(AppNavigator.SmbJump(host: last.host, path: last.path))
+                    // …and the video that was playing, at its position.
+                    if let video = ResumeStore.video, let connection,
+                       let entry = entries.first(where: { "smb://\(connection.host)/\($0.path)" == video.source }) {
+                        navigator.pendingResumeMs = (video.source, video.timeMs)
+                        open(entry)
+                    }
+                }
+            }
+            .onChange(of: path) { newPath in
+                if let connection { ResumeStore.saveFolder(host: connection.host, path: newPath) }
             }
             .onChange(of: navigator.smbJump) { jump in
                 if let jump { Task { await open(jump) } }
@@ -268,6 +282,7 @@ struct SmbBrowserView: View {
             do {
                 let conn = try await SmbRegistry.shared.connect(host: host, username: username, password: password, domain: domain)
                 connection = conn
+                ResumeStore.saveFolder(host: conn.host, path: "")
                 SmbServerStore.addOrUpdate(SmbServerProfile(host: host, username: username, domain: domain), password: password)
                 savedProfiles = SmbServerStore.load()
                 path = ""
@@ -299,6 +314,7 @@ struct SmbBrowserView: View {
         }
         connection = conn
         path = jump.path
+        ResumeStore.saveFolder(host: conn.host, path: jump.path)
         query = ""
         await load()
     }
@@ -344,6 +360,7 @@ struct SmbBrowserView: View {
     }
 
     private func disconnect() {
+        ResumeStore.saveFolder(host: nil, path: "")
         cancelDeepSearch()
         connection = nil
         entries = []

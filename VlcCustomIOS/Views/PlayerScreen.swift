@@ -353,6 +353,7 @@ struct PlayerScreen: View {
     }
 
     private func close() {
+        ResumeStore.clearVideo()
         player.stop()
         onClose()
     }
@@ -415,6 +416,8 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     @objc private func didEnterBackground() {
         guard let item = PlaybackQueue.shared.current, mediaPlayer.media != nil, !mediaPlayer.isFinished || time > 0 else { return }
         resumeAfterBackground = (item, time, mediaPlayer.isActive)
+        // Survives iOS closing the app in the background: the next launch reopens this video here.
+        ResumeStore.saveVideo(source: item.source, timeMs: time)
         PlaybackDiagnostics.append("player: background — stopping at \(time)ms")
         playGeneration += 1
         VLCControl.stop(mediaPlayer)
@@ -454,6 +457,12 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         didReachEnd = false
         smbRoute = SmbRoutePreferences.prefersProxy(item.source) ? .proxy : .direct
         triedOtherRoute = false
+        if let resume = AppNavigator.shared.pendingResumeMs, resume.source == item.source {
+            AppNavigator.shared.pendingResumeMs = nil
+            PlaybackDiagnostics.append("player: resuming after relaunch at \(resume.ms)ms")
+            start(item, resumeAtMs: max(0, resume.ms - 2000))
+            return
+        }
         start(item)
     }
 

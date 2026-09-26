@@ -468,6 +468,8 @@ enum FullImageCache {
         return cache
     }()
 
+    static func clear() { cache.removeAllObjects() }
+
     static func image(for source: String) -> UIImage? {
         cache.object(forKey: source as NSString)
     }

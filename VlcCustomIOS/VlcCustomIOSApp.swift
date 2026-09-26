@@ -7,6 +7,14 @@ struct VlcCustomIOSApp: App {
 
     init() {
         PlaybackDiagnostics.start()
+        // Suspended apps are killed first by how much memory they hold: drop what can be rebuilt (decoded
+        // thumbnails and pictures) on the way to the background, and on a memory warning.
+        for name in [UIApplication.didEnterBackgroundNotification, UIApplication.didReceiveMemoryWarningNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                FullImageCache.clear()
+                Task { await ThumbnailService.shared.clearMemory() }
+            }
+        }
     }
 
     var body: some Scene {

@@ -436,6 +436,11 @@ actor ThumbnailService {
         }
     }
 
+    /// Memory only (the disk copies stay): used when the app goes to the background.
+    func clearMemory() {
+        memoryCache.removeAllObjects()
+    }
+
     /// Drops one entry's thumbnail (and its "no frame / no cover" marker) so it is made again.
     func forget(source: String) {
         let key = cacheKey(source)
