@@ -128,6 +128,46 @@ final class LiveSubtitles: ObservableObject {
         }
     }
 
+    /// Translate subtitles that already exist (a track inside the file, or a file beside it) instead of recognizing
+    /// speech: every line is shown in its original language at once and translated in place by the same batched,
+    /// playhead-first queue the AI subtitles use (resumes after quota pauses, persisted). With no target language
+    /// the lines are simply shown.
+    func startFromExisting(source: String, optionID: String, lines: [TimedLine], translateTo: String?, dual: Bool) {
+        stop()
+        errorMessage = nil
+        let key = Self.cacheKey(source: source + "#" + optionID, language: nil, translateTo: translateTo, dual: dual)
+        let dir = Self.subsDirectory()
+        subtitleURL = dir.appendingPathComponent("sub_\(key).srt")
+        coverageURL = dir.appendingPathComponent("sub_\(key).cov")
+        let pendingURL = dir.appendingPathComponent("sub_\(key).pending.json")
+        self.pendingURL = pendingURL
+        self.translateTo = (translateTo?.isEmpty ?? true) ? nil : translateTo
+        self.sourceLanguage = nil
+        self.dual = dual
+        coverage = Coverage()
+        pausedUntil = nil
+        backoffSeconds = 60
+
+        let saved = subtitleURL.map(Srt.read) ?? []
+        let savedPending = Self.loadPending(pendingURL)
+        if !saved.isEmpty {
+            // Done (or partly done) before: carry on from there.
+            cues = saved
+            pending = savedPending
+        } else {
+            cues = lines.map { LiveCue(startMs: $0.startMs, endMs: $0.endMs, text: SubtitleLayout.wrap($0.text)) }
+            pending = [:]
+            if self.translateTo != nil {
+                for line in lines { pending[line.startMs] = line.text.replacingOccurrences(of: "\n", with: " ") }
+            }
+            persist()
+            savePending()
+        }
+        PlaybackDiagnostics.append("subs: existing \(optionID) — \(lines.count) lines, \(pending.count) to translate")
+        updateTranslationNote()
+        startDrainingIfNeeded()
+    }
+
     func stop() {
         task?.cancel()
         task = nil

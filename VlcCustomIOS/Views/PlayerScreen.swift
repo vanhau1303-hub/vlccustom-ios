@@ -206,7 +206,9 @@ struct PlayerScreen: View {
             PictureControlsSheet(player: player)
         }
         .sheet(isPresented: $showSpeechDialog) {
-            SpeechSubtitleDialog(live: live, videoName: queue.current?.name ?? "", durationMs: Int(player.duration), source: queue.current?.source ?? "")
+            SpeechSubtitleDialog(live: live, videoName: queue.current?.name ?? "", durationMs: Int(player.duration),
+                                 source: queue.current?.source ?? "",
+                                 onUseExisting: { player.currentSubtitleTrack = -1 })
         }
         }
     }
@@ -591,7 +593,11 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     var currentSubtitleTrack: Int32 {
         get { mediaPlayer.currentVideoSubTitleIndex }
-        set { mediaPlayer.currentVideoSubTitleIndex = newValue; objectWillChange.send() }
+        set {
+            let player = mediaPlayer
+            VLCControl.run { player.currentVideoSubTitleIndex = newValue }
+            objectWillChange.send()
+        }
     }
 
     // MARK: - Picture adjustment (VLCAdjustFilter — contrast/brightness/hue/saturation/gamma)
