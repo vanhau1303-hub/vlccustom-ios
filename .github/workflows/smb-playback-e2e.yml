@@ -64,6 +64,11 @@ jobs:
           ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine=frequency=520 \
             -t 120 -c:v libx264 -b:v 5M -g 15 -pix_fmt yuv420p -c:a aac \
             -movflags frag_keyframe+empty_moov+default_base_moof -frag_duration 250000 "/tmp/smb/media/Phim/fragmented.mp4"
+          # Subtitles: an MKV with a text (SRT) track inside, and an .srt beside an MP4.
+          printf '1\n00:00:01,000 --> 00:00:03,500\nXin chào, đây là dòng một\n\n2\n00:00:05,000 --> 00:00:07,000\nDòng thứ hai <i>nghiêng</i>\n\n3\n00:01:10,250 --> 00:01:12,000\nDòng cuối\n' > /tmp/smb/subs.srt
+          ffmpeg -hide_banner -loglevel error -i "/tmp/smb/media/Phim/clip_moov_end.mp4" -i /tmp/smb/subs.srt \
+            -map 0 -map 1 -c copy -c:s srt -metadata:s:s:0 language=vie "/tmp/smb/media/Phim/subbed.mkv"
+          cp /tmp/smb/subs.srt "/tmp/smb/media/Phim/clip_moov_end.srt"
           ls -la /tmp/smb/media/Phim
 
       - name: Start Samba
@@ -131,7 +136,7 @@ jobs:
           # clip|route|required - the fragmented file is tried both ways; its direct run is informational.
           for CASE in "media/Phim/clip_moov_end.mp4|direct|1" "media/Phim/Phim thử & test.mkv|direct|1" \
                       "media/Phim/clip_moov_end.mp4|proxy|1" "media/Phim/fragmented.mp4|proxy|1" \
-                      "media/Phim/fragmented.mp4|direct|0"; do
+                      "media/Phim/fragmented.mp4|direct|0" "media/Phim/subbed.mkv|direct|1"; do
             CLIP="${CASE%%|*}"; REST="${CASE#*|}"; ROUTE="${REST%%|*}"; REQUIRED="${REST##*|}"
             TAG=$(basename "$CLIP" | tr -c 'A-Za-z0-9._-' '_')_$ROUTE
             xcrun simctl terminate "$DEVICE_ID" com.vlccustom.ios >/dev/null 2>&1 || true
@@ -142,6 +147,7 @@ jobs:
             SIMCTL_CHILD_DEMO_SMB_FILE="$CLIP" \
             SIMCTL_CHILD_DEMO_SMB_ROUTE="$ROUTE" \
             SIMCTL_CHILD_DEMO_SMB_THUMB=1 \
+            SIMCTL_CHILD_DEMO_SMB_SUBS=1 \
               xcrun simctl launch "$DEVICE_ID" com.vlccustom.ios
             sleep 30
             xcrun simctl io "$DEVICE_ID" screenshot "e2e/${TAG}_12s.png"
@@ -157,6 +163,14 @@ jobs:
             FIRST=$(grep -m1 -E 'player: time=[0-9]+ms' "e2e/${TAG}.log" | awk '{print $2}')
             echo "opened at $OPEN, first playback time reported at $FIRST"
             grep -hE 'demo: thumb' "e2e/${TAG}.log" || echo "demo: thumb (no result logged)"
+            grep -hE 'demo: subs' "e2e/${TAG}.log" || true
+            case "$CLIP" in
+              *subbed.mkv|*clip_moov_end.mp4)
+                if ! grep -qE 'demo: subs loaded 3 lines' "e2e/${TAG}.log"; then
+                  echo "FAIL: $CLIP [$ROUTE] existing subtitles"
+                  FAILED=1
+                fi ;;
+            esac
             if ! grep -q 'demo: thumb ok' "e2e/${TAG}.log" && [ "$REQUIRED" = "1" ]; then
               echo "FAIL: $CLIP [$ROUTE] thumbnail"
               FAILED=1

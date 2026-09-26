@@ -51,6 +51,20 @@ struct ContentView: View {
             PlaybackDiagnostics.append(image.map { "demo: thumb ok \($0.width)x\($0.height) in \(seconds)s" }
                                        ?? "demo: thumb FAILED after \(seconds)s")
         }
+        // CI: find and read the existing subtitles (MKV track / file beside the video) and log what came out.
+        if env["DEMO_SMB_SUBS"] == "1" {
+            let options = await ExistingSubtitles.options(host: host, path: file)
+            PlaybackDiagnostics.append("demo: subs options: " + options.map(\.label).joined(separator: " | "))
+            for option in options {
+                do {
+                    let lines = try await ExistingSubtitles.load(option, host: host, videoPath: file) { _ in }
+                    let first = lines.first.map { "\($0.startMs)-\($0.endMs) \($0.text)" } ?? "-"
+                    PlaybackDiagnostics.append("demo: subs loaded \(lines.count) lines from \(option.id); first: \(first)")
+                } catch {
+                    PlaybackDiagnostics.append("demo: subs FAILED \(option.id): \(error.localizedDescription)")
+                }
+            }
+        }
         PlaybackQueue.shared.start([item], index: 0, label: "demo")
         demoPlaying = true
     }
