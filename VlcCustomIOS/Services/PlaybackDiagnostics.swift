@@ -30,6 +30,7 @@ enum PlaybackDiagnostics {
         VLCLibrary.shared().loggers = [vlcLogger]
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         append("=== app start v\(version), iOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
+        HangDiagnostics.start()
         CrashReporter.shared.start()
     }
 
@@ -163,12 +164,12 @@ final class CrashReporter: NSObject, MXMetricManagerSubscriber {
                 let summary = "type=\(crash.exceptionType?.stringValue ?? "-") code=\(crash.exceptionCode?.stringValue ?? "-") " +
                     "signal=\(crash.signal?.stringValue ?? "-") reason=\(crash.terminationReason ?? "-") " +
                     "app=\(meta.applicationBuildVersion) os=\(meta.osVersion)"
-                let stack = String(decoding: crash.callStackTree.jsonRepresentation(), as: UTF8.self)
-                PlaybackDiagnostics.append("!!! CRASH (iOS report, \(payload.timeStampEnd)): \(summary)\n\(stack.prefix(12_000))")
+                let stack = HangDiagnostics.readable(crash.callStackTree.jsonRepresentation())
+                PlaybackDiagnostics.append("!!! CRASH (iOS report, \(payload.timeStampEnd)): \(summary)\n\(stack)")
             }
             for hang in payload.hangDiagnostics ?? [] {
-                let stack = String(decoding: hang.callStackTree.jsonRepresentation(), as: UTF8.self)
-                PlaybackDiagnostics.append("!!! HANG \(hang.hangDuration) (iOS report, \(payload.timeStampEnd))\n\(stack.prefix(8_000))")
+                let stack = HangDiagnostics.readable(hang.callStackTree.jsonRepresentation())
+                PlaybackDiagnostics.append("!!! HANG \(hang.hangDuration) (iOS report, \(payload.timeStampEnd))\n\(stack)")
             }
         }
         UserDefaults.standard.set(Array(seen.suffix(200)), forKey: seenKey)

@@ -13,6 +13,7 @@ import MobileVLCKit
 enum VLCControl {
     private static let queue = DispatchQueue(label: "vlc-control", qos: .userInitiated)
     private static var retired: [VLCMediaPlayer] = []
+    private static let releaseQueue = DispatchQueue(label: "vlc-release", qos: .utility)
 
     /// Sets `media` (if given) and starts playback, off the main thread, in call order.
     static func play(_ player: VLCMediaPlayer, media: VLCMedia? = nil) {
@@ -58,8 +59,16 @@ enum VLCControl {
     private static func sweepSoon() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             // A player that never reports stopping is kept (a small leak) rather than risking a frozen UI.
+            let finished = retired.filter { $0.isFinished }
             retired.removeAll { $0.isFinished }
             if !retired.isEmpty { sweepSoon() }
+            // The last reference is dropped on a background thread, never the main one. Releasing a libVLC player
+            // destroys the video output it keeps for reuse, and the iOS video output does its teardown with a
+            // synchronous hop to the main thread — from the main thread that is a deadlock (a real freeze log: the
+            // previous video's player was released right as the next file opened, and the UI never came back).
+            if !finished.isEmpty {
+                releaseQueue.async { withExtendedLifetime(finished) {} }
+            }
         }
     }
 }

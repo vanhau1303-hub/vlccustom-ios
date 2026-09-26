@@ -486,6 +486,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         playGeneration += 1
         let generation = playGeneration
         isLoading = true
+        duration = 0
         guard let (host, path) = SmbUri.parse(item.source) else {
             guard let local = URL(string: item.source) else { return }
             PlaybackDiagnostics.append("player: local \(item.name)")
@@ -636,6 +637,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             self.isPlaying = self.mediaPlayer.isActive
             if self.mediaPlayer.state == .error || self.mediaPlayer.state == .ended { self.isLoading = false }
             PlaybackDiagnostics.append("player: state=\(self.mediaPlayer.state.rawValue)")
+            PlayerTrace.last = "state \(self.mediaPlayer.state.rawValue) at \(self.time)ms"
             switch self.mediaPlayer.state {
             case .ended: self.didReachEnd = true
             case .error:
@@ -654,7 +656,9 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             if now > 0, self.isLoading { self.isLoading = false }
             guard abs(now - previous) >= 250 || now < previous else { return }
             self.time = now
-            self.duration = self.mediaPlayer.media?.length.intValue ?? 0
+            // Length once per file (VLCKit keeps querying libVLC while it is unknown).
+            if self.duration <= 0 { self.duration = self.mediaPlayer.media?.length.intValue ?? 0 }
+            PlayerTrace.last = "time \(now)ms"
             // Proof of actual playback in the log (every ~5s of media time), not just "state=playing".
             if self.time / 5000 != previous / 5000 || (previous == 0 && self.time > 0) {
                 PlaybackDiagnostics.append("player: time=\(self.time)ms / \(self.duration)ms")
