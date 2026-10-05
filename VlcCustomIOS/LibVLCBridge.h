@@ -16,6 +16,7 @@ libvlc_media_player_t *libvlc_media_player_new_from_media(libvlc_media_t *p_md);
 void libvlc_media_player_release(libvlc_media_player_t *p_mi);
 int libvlc_media_player_play(libvlc_media_player_t *p_mi);
 void libvlc_media_player_stop(libvlc_media_player_t *p_mi);
+void libvlc_media_player_set_pause(libvlc_media_player_t *mp, int do_pause);
 float libvlc_media_player_get_position(libvlc_media_player_t *p_mi);
 void libvlc_media_player_set_position(libvlc_media_player_t *p_mi, float f_pos);
 int64_t libvlc_media_player_get_length(libvlc_media_player_t *p_mi);

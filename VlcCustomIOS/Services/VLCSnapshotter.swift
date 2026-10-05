@@ -188,21 +188,48 @@ final class VLCSnapshotter: @unchecked Sendable {
             if cancelled() { return [] }
             return firstUsable ? (best.map { [$0.image] } ?? []) : results
         }
-        probe.close()
+        // Kept, paused, as a fallback: some files (fragmented MP4 without an index) take longer to open at a spot
+        // than the whole budget, and a frame from the start beats no thumbnail.
+        libvlc_media_player_set_pause(probe.player, 1)
+        defer { probe.close() }
 
         // 2) One fresh player per spot, opened right there.
+        let reserve: TimeInterval = 6
         for position in positions {
-            if cancelled() || Date() >= deadline { break }
+            let spotDeadline = min(deadline.addingTimeInterval(-reserve), Date().addingTimeInterval(12))
+            if cancelled() || Date() >= spotDeadline { break }
             let start = Double(length) * Double(position) / 1000
             guard let session = Session(location: location, options: options + [":start-time=\(start)"],
                                         maxWidth: maxWidth, minFrames: 2) else { continue }
-            let image = session.frame(until: min(deadline, Date().addingTimeInterval(12)), cancelled: cancelled)
+            let image = session.frame(until: spotDeadline, cancelled: cancelled)
             session.close()
             guard let image else { continue }
             if firstUsable {
                 if consider(image) { break }
             } else {
                 results.append(image)
+            }
+        }
+        if cancelled() { return [] }
+
+        // 3) Nothing from any spot: whatever the first player shows (keeps playing from the start).
+        if firstUsable ? best == nil : results.isEmpty {
+            probe.sink.reset()
+            libvlc_media_player_set_pause(probe.player, 0)
+            let fallbackDeadline = max(deadline, Date().addingTimeInterval(reserve))
+            if let image = probe.frame(until: fallbackDeadline, cancelled: cancelled) {
+                if firstUsable {
+                    // The opening is often black: give it a few more frames to show something.
+                    var current = image
+                    while !consider(current), !cancelled(), Date() < fallbackDeadline {
+                        probe.sink.reset()
+                        guard let next = probe.frame(until: min(fallbackDeadline, Date().addingTimeInterval(1.5)),
+                                                     cancelled: cancelled) else { break }
+                        current = next
+                    }
+                } else {
+                    results.append(image)
+                }
             }
         }
         if cancelled() { return [] }
