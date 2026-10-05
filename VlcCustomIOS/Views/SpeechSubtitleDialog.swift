@@ -20,42 +20,46 @@ struct SpeechSubtitleDialog: View {
         NavigationStack {
             Form {
                 Section {
+                    Text(videoName)
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .lineLimit(2).truncationMode(.middle)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Section {
                     if let options {
                         if options.isEmpty {
-                            Text("Không tìm thấy phụ đề dạng chữ trong file hoặc file phụ đề kèm theo.")
-                                .font(.footnote).foregroundStyle(.secondary)
+                            Label {
+                                Text("Video này không có phụ đề dạng chữ bên trong, cũng không có file phụ đề kèm theo (.srt, .ass, .vtt cùng tên).")
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } icon: {
+                                Image(systemName: "captions.bubble").foregroundStyle(.secondary)
+                            }
+                            .font(.footnote).foregroundStyle(.secondary)
                         }
                         ForEach(options) { option in
-                            Button { use(option) } label: {
-                                HStack {
-                                    Label(option.label, systemImage: "captions.bubble")
-                                    Spacer()
-                                    if loadingOption == option.id {
-                                        if case .embedded = option.kind {
-                                            Text("\(Int(loadProgress * 100))%").font(.caption).monospacedDigit()
-                                        }
-                                        ProgressView()
-                                    }
-                                }
-                            }
-                            .disabled(loadingOption != nil)
+                            Button { use(option) } label: { optionRow(option) }
+                                .disabled(loadingOption != nil)
                         }
                     } else {
                         Button { findExisting() } label: {
-                            HStack {
-                                Label("Tìm phụ đề có sẵn (trong file / file kèm)", systemImage: "text.magnifyingglass")
-                                if searching { Spacer(); ProgressView() }
+                            HStack(spacing: 12) {
+                                Image(systemName: "text.magnifyingglass").frame(width: 24)
+                                Text("Tìm phụ đề có sẵn")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                if searching { ProgressView() }
                             }
                         }
                         .disabled(searching)
                     }
                     if let existingError {
                         Text(existingError).font(.footnote).foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 } header: {
                     Text("Dịch phụ đề có sẵn")
                 } footer: {
-                    Text("Dịch sang ngôn ngữ chọn ở mục \"Dịch sang\" bên dưới (không chọn thì chỉ hiện phụ đề gốc). Phụ đề nằm trong file MKV cần đọc hết file một lần qua mạng.")
+                    Text("Tìm trong file MKV và file phụ đề cùng tên bên cạnh video, rồi dịch sang ngôn ngữ ở mục \"Dịch sang\".")
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Section("Mô hình nhận dạng") {
                     Picker("Kích thước mô hình", selection: $settings.modelSize) {
@@ -75,7 +79,7 @@ struct SpeechSubtitleDialog: View {
                     }
                     if settings.translateTo != nil {
                         Toggle("Hiện song ngữ (gốc + dịch)", isOn: $settings.dualSubtitles)
-                        TextField("Máy chủ LibreTranslate riêng (để trống = Google, miễn phí)", text: $settings.libreTranslateServer)
+                        TextField("Máy chủ LibreTranslate (trống = Google)", text: $settings.libreTranslateServer)
                             .textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
                             .keyboardType(.URL)
                     }
@@ -99,7 +103,7 @@ struct SpeechSubtitleDialog: View {
                     Text("Phụ đề được tạo dần khi video đang phát và lưu lại — xem tiếp lần sau sẽ tiếp tục thay vì làm lại từ đầu.")
                 }
             }
-            .navigationTitle("Phụ đề AI: \(videoName)")
+            .navigationTitle("Phụ đề AI")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Đóng") { dismiss() } }
@@ -109,6 +113,31 @@ struct SpeechSubtitleDialog: View {
         // Load an already-downloaded model while the user is still picking options.
         .task(id: settings.modelSize) {
             await WhisperEngine.shared.preloadIfDownloaded(model: settings.modelSize.rawValue)
+        }
+    }
+
+    /// One found subtitle: where it is on the first line, details (language, format) below, progress on the right —
+    /// long track / file names wrap instead of running into the spinner.
+    private func optionRow(_ option: ExistingSubtitles.Option) -> some View {
+        let parts = option.label.components(separatedBy: ": ")
+        let place = parts.count > 1 ? parts[0] : nil
+        let name = parts.count > 1 ? parts.dropFirst().joined(separator: ": ") : option.label
+        return HStack(spacing: 12) {
+            Image(systemName: place == "File kèm" ? "doc.text" : "captions.bubble").frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).lineLimit(2).truncationMode(.middle)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let place {
+                    Text(place).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if loadingOption == option.id {
+                if case .embedded = option.kind {
+                    Text("\(Int(loadProgress * 100))%").font(.caption).monospacedDigit()
+                }
+                ProgressView()
+            }
         }
     }
 
