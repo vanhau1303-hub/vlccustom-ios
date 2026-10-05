@@ -106,6 +106,10 @@ struct SpeechSubtitleDialog: View {
             }
         }
         .presentationDetents([.medium, .large])
+        // Load an already-downloaded model while the user is still picking options.
+        .task(id: settings.modelSize) {
+            await WhisperEngine.shared.preloadIfDownloaded(model: settings.modelSize.rawValue)
+        }
     }
 
     private func findExisting() {

@@ -80,7 +80,12 @@ final class LiveSubtitles: ObservableObject {
     /// the start of the file.
     var playheadProvider: (() -> Int)?
 
-    private static let windowMs = 30_000
+    /// Windows after the first are long: WhisperKit cuts them at pauses (VAD) into ≤30 s chunks and decodes
+    /// `workers` of them at once, instead of one 30 s window at a time.
+    private static let windowMs = 90_000
+    /// The first window at a new spot (start, seek) is short, so the first lines show up within seconds.
+    private static let firstWindowMs = 15_000
+    private static let workers = 3
     private static let silenceRms: Float = 150.0 / 32768.0
 
     private var task: Task<Void, Never>?
@@ -224,6 +229,10 @@ final class LiveSubtitles: ObservableObject {
             }
         }
         var prefetched: (start: Int, length: Int, task: Task<[Float], Error>)?
+        var lastEnd: Int?
+        // Detected once, then fixed: auto-detect re-ran language detection on every window (extra work, and the
+        // occasional window "detected" as another language).
+        var spoken = language
 
         while running, !Task.isCancelled {
             // Always work where the viewer is: the first gap at (slightly before) the playhead — a seek moves the
@@ -231,7 +240,8 @@ final class LiveSubtitles: ObservableObject {
             let playhead = playheadProvider?() ?? 0
             guard let cursor = coverage.nextGap(from: max(0, playhead - 2_000), limit: durationMs)
                 ?? coverage.nextGap(from: 0, limit: durationMs) else { break }
-            let length = min(Self.windowMs, durationMs - cursor)
+            let length = min(cursor == lastEnd ? Self.windowMs : Self.firstWindowMs, durationMs - cursor)
+            lastEnd = cursor + length
             status = "Đang nhận dạng giọng nói… (\(Self.clock(cursor)) / \(Self.clock(durationMs)))"
 
             let audio: Task<[Float], Error>
@@ -256,6 +266,7 @@ final class LiveSubtitles: ObservableObject {
                 if samples.isEmpty || rms(samples) < Self.silenceRms {
                     coverage.mark(cursor, cursor + length)
                     persist()
+                    lastEnd = cursor + length
                     continue
                 }
 
@@ -264,9 +275,18 @@ final class LiveSubtitles: ObservableObject {
                 // temperatureFallbackCount 2 (default 5): hard-to-hear windows no longer get decoded 6 times over.
                 // wordTimestamps: per-word times, used to cut Whisper's long segments (it happily returns one
                 // 10–30 s segment for continuous speech) into short cues that each appear when they are spoken.
-                let options = DecodingOptions(task: .transcribe, language: language, temperatureFallbackCount: 2,
-                                              skipSpecialTokens: true, wordTimestamps: true, noSpeechThreshold: 0.6)
+                // chunkingStrategy .vad + concurrentWorkerCount: a window longer than 30 s is cut at pauses and its
+                // chunks are decoded in parallel (segment times come back relative to the whole window).
+                let options = DecodingOptions(task: .transcribe, language: spoken, temperatureFallbackCount: 2,
+                                              detectLanguage: spoken == nil,
+                                              skipSpecialTokens: true, wordTimestamps: true, noSpeechThreshold: 0.6,
+                                              concurrentWorkerCount: Self.workers, chunkingStrategy: .vad)
                 let results = try await whisper.transcribe(audioArray: samples, decodeOptions: options)
+                if spoken == nil, let detected = results.first(where: { !$0.segments.isEmpty })?.language,
+                   !detected.isEmpty {
+                    spoken = detected
+                    if sourceLanguage == nil { sourceLanguage = detected }
+                }
 
                 // Where the extracted audio really starts. libVLC's :start-time lands on the keyframe before the
                 // requested time, while :stop-time is exact — so the audio ends at cursor + length and its real
@@ -274,7 +294,8 @@ final class LiveSubtitles: ObservableObject {
                 let audioMs = samples.count / 16 // 16 kHz
                 let audioStart = (audioMs > length / 2 && audioMs < length + 15_000) ? cursor + length - audioMs : cursor
 
-                if let segments = results.first?.segments, !segments.isEmpty {
+                let segments = results.flatMap(\.segments).sorted { $0.start < $1.start }
+                if !segments.isEmpty {
                     for piece in Self.split(segments) {
                         let text = cleanText(piece.text)
                         guard !text.isEmpty else { continue }
