@@ -36,15 +36,14 @@ let subtitleLanguages: [SubtitleLanguage] = [
 
 /// WhisperKit downloads a Core ML model named by these variants from `argmaxinc/whisperkit-coreml` on first use.
 enum WhisperModelSize: String, CaseIterable, Identifiable {
-    case tiny, base, small
+    case tiny, base
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .tiny: return "Tiny (nhanh, kém chính xác hơn)"
-        case .base: return "Base"
-        case .small: return "Small (chính xác hơn, tải mô hình lâu hơn)"
+        case .tiny: return "Tiny (nhanh nhất, kém chính xác hơn)"
+        case .base: return "Base (chính xác hơn)"
         }
     }
 }

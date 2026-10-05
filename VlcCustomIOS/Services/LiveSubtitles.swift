@@ -85,7 +85,7 @@ final class LiveSubtitles: ObservableObject {
     private static let windowMs = 90_000
     /// The first window at a new spot (start, seek) is short, so the first lines show up within seconds.
     private static let firstWindowMs = 15_000
-    private static let workers = 3
+    private static let workers = 4
     private static let silenceRms: Float = 150.0 / 32768.0
 
     private var task: Task<Void, Never>?
@@ -254,6 +254,7 @@ final class LiveSubtitles: ObservableObject {
             prefetched = nil
 
             do {
+                let waitStart = Date()
                 let samples = try await audio.value
 
                 // Start pulling the next window's audio now, so it is ready when recognition of this one ends.
@@ -272,16 +273,24 @@ final class LiveSubtitles: ObservableObject {
 
                 // skipSpecialTokens: without it every segment's text carried Whisper's control tokens
                 // ("<|startoftranscript|><|vi|><|0.00|>…") — the "code" that showed up instead of subtitles.
-                // temperatureFallbackCount 2 (default 5): hard-to-hear windows no longer get decoded 6 times over.
+                // temperatureFallbackCount 1 (default 5) and no logProbThreshold: a line the model is merely unsure
+                // of (music, noise, accents — common in films) is kept instead of being decoded again and again;
+                // only a repetition loop (compressionRatioThreshold) or a bad first token still gets one retry.
                 // wordTimestamps: per-word times, used to cut Whisper's long segments (it happily returns one
                 // 10–30 s segment for continuous speech) into short cues that each appear when they are spoken.
                 // chunkingStrategy .vad + concurrentWorkerCount: a window longer than 30 s is cut at pauses and its
                 // chunks are decoded in parallel (segment times come back relative to the whole window).
-                let options = DecodingOptions(task: .transcribe, language: spoken, temperatureFallbackCount: 2,
+                let options = DecodingOptions(task: .transcribe, language: spoken, temperatureFallbackCount: 1,
                                               detectLanguage: spoken == nil,
-                                              skipSpecialTokens: true, wordTimestamps: true, noSpeechThreshold: 0.6,
+                                              skipSpecialTokens: true, wordTimestamps: true, logProbThreshold: nil,
+                                              noSpeechThreshold: 0.6,
                                               concurrentWorkerCount: Self.workers, chunkingStrategy: .vad)
+                let decodeStart = Date()
                 let results = try await whisper.transcribe(audioArray: samples, decodeOptions: options)
+                PlaybackDiagnostics.append(String(format: "asr: %@ %lds audio — wait %.1fs, decode %.1fs, %ld chunks",
+                                                  Self.clock(cursor), length / 1000,
+                                                  decodeStart.timeIntervalSince(waitStart), Date().timeIntervalSince(decodeStart),
+                                                  results.count))
                 if spoken == nil, let detected = results.first(where: { !$0.segments.isEmpty })?.language,
                    !detected.isEmpty {
                     spoken = detected

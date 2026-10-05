@@ -7,6 +7,7 @@ struct VlcCustomIOSApp: App {
 
     init() {
         PlaybackDiagnostics.start()
+        WhisperEngine.removeUnusedModels()
         // Suspended apps are killed first by how much memory they hold: drop what can be rebuilt (decoded
         // thumbnails and pictures) on the way to the background, and on a memory warning.
         for name in [UIApplication.didEnterBackgroundNotification, UIApplication.didReceiveMemoryWarningNotification] {

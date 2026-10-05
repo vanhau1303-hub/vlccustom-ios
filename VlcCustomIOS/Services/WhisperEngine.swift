@@ -31,5 +31,24 @@ actor WhisperEngine {
         _ = try? await instance(model: model)
     }
 
+    /// Deletes downloaded models the app no longer offers (Small, ~500 MB), from WhisperKit's download folder
+    /// (Documents/huggingface/models/argmaxinc/whisperkit-coreml/openai_whisper-<size>).
+    static func removeUnusedModels() {
+        DispatchQueue.global(qos: .utility).async {
+            let fm = FileManager.default
+            guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+            let folder = docs.appendingPathComponent("huggingface/models/argmaxinc/whisperkit-coreml")
+            let offered = Set(WhisperModelSize.allCases.map(\.rawValue))
+            for name in (try? fm.contentsOfDirectory(atPath: folder.path)) ?? [] {
+                guard name.hasPrefix("openai_whisper-") else { continue }
+                let size = String(name.dropFirst("openai_whisper-".count))
+                guard !offered.contains(size) else { continue }
+                try? fm.removeItem(at: folder.appendingPathComponent(name))
+                UserDefaults.standard.removeObject(forKey: downloadedKey(size))
+                PlaybackDiagnostics.append("asr: removed unused model \(name)")
+            }
+        }
+    }
+
     private static func downloadedKey(_ model: String) -> String { "whisper_downloaded_\(model)" }
 }
