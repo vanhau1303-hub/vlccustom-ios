@@ -183,10 +183,13 @@ struct PlayerScreen: View {
             live.playheadProvider = { [weak player] in Int(player?.time ?? 0) }
         }
         .onDisappear {
-            player.stop(); live.stop(); PlaybackActivity.shared.isBusy = false
+            player.stop(); live.reset(); PlaybackActivity.shared.isBusy = false
             OrientationLock.unlock()
         }
         .onChange(of: player.didReachEnd) { reached in if reached { playNextOrClose() } }
+        // Another file in the same player (next in the folder, picked from the list): drop the previous one's
+        // AI / translated subtitles.
+        .onChange(of: queue.current?.source) { source in live.reset(unlessFor: source) }
         .alert("Không phát được video", isPresented: $player.showError) {
             Button("Đóng", role: .cancel) {}
         } message: {

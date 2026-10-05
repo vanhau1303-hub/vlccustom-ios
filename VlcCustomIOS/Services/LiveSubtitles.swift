@@ -107,6 +107,7 @@ final class LiveSubtitles: ObservableObject {
     func start(source: String, durationMs: Int, modelSize: String, language: String?, translateTo: String?, dual: Bool) {
         stop()
         errorMessage = nil
+        self.source = source
 
         let key = Self.cacheKey(source: source, language: language, translateTo: translateTo, dual: dual)
         let dir = Self.subsDirectory()
@@ -140,6 +141,7 @@ final class LiveSubtitles: ObservableObject {
     func startFromExisting(source: String, optionID: String, lines: [TimedLine], translateTo: String?, dual: Bool) {
         stop()
         errorMessage = nil
+        self.source = source
         let key = Self.cacheKey(source: source + "#" + optionID, language: nil, translateTo: translateTo, dual: dual)
         let dir = Self.subsDirectory()
         subtitleURL = dir.appendingPathComponent("sub_\(key).srt")
@@ -181,6 +183,26 @@ final class LiveSubtitles: ObservableObject {
         translationNote = nil
         running = false
         status = nil
+    }
+
+    /// The video these subtitles belong to.
+    private(set) var source: String?
+
+    /// Stops and forgets the subtitles unless they belong to `source` — called whenever the player opens a file
+    /// (next in the folder, picked from the list, or a new video after closing the player), so lines made for one
+    /// video never show up over the next. Reopening the same file (route switch) keeps them. What was made is
+    /// already saved to disk and comes back when AI subtitles are started on that video again.
+    func reset(unlessFor source: String? = nil) {
+        guard source == nil || source != self.source else { return }
+        stop()
+        cues = []
+        pending = [:]
+        coverage = Coverage()
+        subtitleURL = nil
+        coverageURL = nil
+        pendingURL = nil
+        errorMessage = nil
+        self.source = nil
     }
 
     /// The cue that should be on screen at `ms` (with a little slack either side, like the Android overlay).
