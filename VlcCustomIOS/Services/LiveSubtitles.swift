@@ -255,7 +255,13 @@ final class LiveSubtitles: ObservableObject {
 
             do {
                 let waitStart = Date()
-                let samples = try await audio.value
+                var samples = try await audio.value
+                // :stop-time is exact, :start-time may land earlier (keyframe; whole file if the seek fails): keep
+                // only the window itself, anchored at its exact end.
+                if samples.count > (length + 15_000) * 16 {
+                    PlaybackDiagnostics.append("asr: \(Self.clock(cursor)) got \(samples.count / 16_000)s audio for \(length / 1000)s — trimmed")
+                    samples = Array(samples.suffix(length * 16))
+                }
 
                 // Start pulling the next window's audio now, so it is ready when recognition of this one ends.
                 let nextStart = cursor + length
@@ -301,7 +307,7 @@ final class LiveSubtitles: ObservableObject {
                 // requested time, while :stop-time is exact — so the audio ends at cursor + length and its real
                 // start follows from its length. Without this every cue in the window was shifted.
                 let audioMs = samples.count / 16 // 16 kHz
-                let audioStart = (audioMs > length / 2 && audioMs < length + 15_000) ? cursor + length - audioMs : cursor
+                let audioStart = audioMs > length / 2 ? cursor + length - audioMs : cursor
 
                 let segments = results.flatMap(\.segments).sorted { $0.start < $1.start }
                 if !segments.isEmpty {
@@ -560,7 +566,8 @@ final class LiveSubtitles: ObservableObject {
     }
 
     private static func cacheKey(source: String, language: String?, translateTo: String?, dual: Bool) -> String {
-        let raw = "v3|\(source)|\(language ?? "auto")|\(translateTo ?? "")|\(dual)"
+        // v4: subtitles made before the extraction fix (v0.38 and older) can be timed against the wrong audio.
+        let raw = "v4|\(source)|\(language ?? "auto")|\(translateTo ?? "")|\(dual)"
         let digest = SHA256.hash(data: Data(raw.utf8))
         return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }

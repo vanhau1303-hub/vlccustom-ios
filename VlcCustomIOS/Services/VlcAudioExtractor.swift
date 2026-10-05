@@ -20,7 +20,11 @@ enum VlcAudioExtractor {
         defer { try? FileManager.default.removeItem(at: wavURL) }
 
         media.addOption(":sout=#transcode{vcodec=none,acodec=s16l,channels=1,samplerate=16000}:std{access=file,mux=wav,dst=\(wavURL.path)}")
-        media.addOption(":no-sout-video")
+        // No ":no-sout-video": the video track must stay selected (transcode's vcodec=none drops it without decoding)
+        // because an MKV's index (Cues) usually lists only video keyframes. With video deselected, the MKV demuxer
+        // had no seek points for the audio alone and :start-time went back to the start of the file — every window
+        // was the whole film up to its end (slow, and every cue landed at the wrong time). Checked with VLC 3.0.23
+        // on the user's MKVs: 15 s asked → 260 s returned before, 15.1 s after.
         media.addOption(":no-sout-spu")
         media.addOption(":start-time=\(Double(startMs) / 1000)")
         media.addOption(":stop-time=\(Double(startMs + durationMs) / 1000)")
