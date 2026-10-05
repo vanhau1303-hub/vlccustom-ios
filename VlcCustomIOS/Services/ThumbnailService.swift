@@ -37,12 +37,12 @@ actor ThumbnailService {
             }
             try? FileManager.default.removeItem(at: old)
         }
-        // Thumbnails are now taken at 25% with black frames skipped (v0.42): the old ones (10%, some black) and the
+        // Thumbnails are now taken at 25% by opening the file right there, black frames skipped (v0.43): the old ones (10%, some black) and the
         // "no frame" markers are dropped once so everything is made again.
-        if !UserDefaults.standard.bool(forKey: "thumbs_v2") {
+        if !UserDefaults.standard.bool(forKey: "thumbs_v3") {
             let files = (try? FileManager.default.contentsOfDirectory(at: Self.directory, includingPropertiesForKeys: nil)) ?? []
             for file in files { try? FileManager.default.removeItem(at: file) }
-            UserDefaults.standard.set(true, forKey: "thumbs_v2")
+            UserDefaults.standard.set(true, forKey: "thumbs_v3")
         }
         // Bounded by bytes, not just count: 300 decoded 480px thumbnails alone could take >100MB, on top of libVLC.
         memoryCache.countLimit = 200

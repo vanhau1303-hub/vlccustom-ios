@@ -19,6 +19,7 @@ void libvlc_media_player_stop(libvlc_media_player_t *p_mi);
 float libvlc_media_player_get_position(libvlc_media_player_t *p_mi);
 void libvlc_media_player_set_position(libvlc_media_player_t *p_mi, float f_pos);
 int64_t libvlc_media_player_get_length(libvlc_media_player_t *p_mi);
+int libvlc_video_get_size(libvlc_media_player_t *p_mi, unsigned num, unsigned *px, unsigned *py);
 
 typedef void *(*libvlc_video_lock_cb)(void *opaque, void **planes);
 typedef void (*libvlc_video_unlock_cb)(void *opaque, void *picture, void *const *planes);

@@ -81,41 +81,66 @@ final class VLCSnapshotter: @unchecked Sendable {
 
     // MARK: - Blocking implementation (background thread only)
 
+    /// One libVLC player rendering into a `FrameSink`.
+    private final class Session {
+        let player: OpaquePointer
+        let sink: FrameSink
+        private let opaque: UnsafeMutableRawPointer
+
+        init?(location: String, options: [String], maxWidth: Int, minFrames: Int) {
+            let instance = VLCLibrary.shared().instance
+            guard let media = libvlc_media_new_location(OpaquePointer(instance), location) else { return nil }
+            // No ":avcodec-skip-idct": skipping the IDCT on every frame gave software-decoded videos grey frames.
+            for option in options + [":no-audio", ":no-spu", ":avcodec-threads=2", ":avcodec-skiploopfilter=4",
+                                     ":deinterlace=0"] {
+                libvlc_media_add_option(media, option)
+            }
+            guard let player = libvlc_media_player_new_from_media(media) else {
+                libvlc_media_release(media)
+                return nil
+            }
+            libvlc_media_release(media)
+            self.player = player
+            sink = FrameSink(maxWidth: maxWidth, minFrames: minFrames)
+            opaque = Unmanaged.passRetained(sink).toOpaque()
+            libvlc_video_set_callbacks(player, { opaque, planes in
+                let sink = Unmanaged<FrameSink>.fromOpaque(opaque!).takeUnretainedValue()
+                planes?.pointee = sink.buffer
+                return nil
+            }, nil, { opaque, _ in
+                Unmanaged<FrameSink>.fromOpaque(opaque!).takeUnretainedValue().frameShown()
+            }, opaque)
+            libvlc_video_set_format_callbacks(player, { opaque, chroma, width, height, pitches, lines in
+                let sink = Unmanaged<FrameSink>.fromOpaque(opaque!.pointee!).takeUnretainedValue()
+                return sink.setup(chroma: chroma, width: width, height: height, pitches: pitches, lines: lines)
+            }, nil)
+            libvlc_media_player_play(player)
+        }
+
+        /// The next frame, cut to the picture's visible size: libVLC hands over the coded size (e.g. 1920×1058 for a
+        /// 1918×1038 film), and the extra rows were the black band under some thumbnails.
+        func frame(until deadline: Date, cancelled: () -> Bool) -> CGImage? {
+            guard let image = sink.wait(until: deadline, cancelled: cancelled) else { return nil }
+            var w: UInt32 = 0, h: UInt32 = 0
+            guard libvlc_video_get_size(player, 0, &w, &h) == 0 else { return image }
+            return sink.crop(image, visibleWidth: Int(w), visibleHeight: Int(h))
+        }
+
+        func close() {
+            libvlc_media_player_stop(player)
+            libvlc_media_player_release(player)
+            Unmanaged<FrameSink>.fromOpaque(opaque).release()
+        }
+    }
+
+    /// Spots in a video are taken by opening the file again at each one (`:start-time`) rather than seeking a
+    /// playing player: after a seek libVLC kept handing over frames from before it (the film's black opening for
+    /// most Blu-ray rips), so whole folders got black thumbnails. Opening at the spot, the first frames shown are
+    /// from there. Checked on the user's files with libVLC 3.0.23 (Cast Away, Forrest Gump, The Green Mile...).
     private static func grab(location: String, options: [String], maxWidth: Int, positions: [Float],
                              firstUsable: Bool, timeout: TimeInterval) -> [CGImage] {
-        let instance = VLCLibrary.shared().instance
         let startGeneration = generation
         let cancelled = { generation != startGeneration }
-
-        guard let media = libvlc_media_new_location(OpaquePointer(instance), location) else { return [] }
-        // No ":avcodec-skip-idct" any more: skipping the IDCT on every frame is what gave some software-decoded
-        // videos a black / grey thumbnail.
-        for option in options + [":no-audio", ":no-spu", ":avcodec-threads=2", ":avcodec-skiploopfilter=4",
-                                 ":deinterlace=0"] {
-            libvlc_media_add_option(media, option)
-        }
-        guard let player = libvlc_media_player_new_from_media(media) else {
-            libvlc_media_release(media)
-            return []
-        }
-        libvlc_media_release(media)
-
-        // A still picture is displayed once; for video the first frames are skipped (often black/half-decoded).
-        let frame = FrameSink(maxWidth: maxWidth, minFrames: positions.isEmpty ? 1 : 3)
-        let opaque = Unmanaged.passRetained(frame).toOpaque()
-        libvlc_video_set_callbacks(player, { opaque, planes in
-            let sink = Unmanaged<FrameSink>.fromOpaque(opaque!).takeUnretainedValue()
-            planes?.pointee = sink.buffer
-            return nil
-        }, nil, { opaque, _ in
-            Unmanaged<FrameSink>.fromOpaque(opaque!).takeUnretainedValue().frameShown()
-        }, opaque)
-        libvlc_video_set_format_callbacks(player, { opaque, chroma, width, height, pitches, lines in
-            let sink = Unmanaged<FrameSink>.fromOpaque(opaque!.pointee!).takeUnretainedValue()
-            return sink.setup(chroma: chroma, width: width, height: height, pitches: pitches, lines: lines)
-        }, nil)
-
-        libvlc_media_player_play(player)
         let deadline = Date().addingTimeInterval(timeout)
         var results: [CGImage] = []
         var best: (image: CGImage, score: Double)?
@@ -127,44 +152,59 @@ final class VLCSnapshotter: @unchecked Sendable {
             return b.mean > 0.08 && b.spread > 0.035
         }
 
-        // 1) first frames arrive
-        if let first = frame.wait(until: deadline, cancelled: cancelled) {
-            let length = libvlc_media_player_get_length(player)
-            if !positions.isEmpty, length > 20_000 {
-                // 2) jump to each spot in turn
-                for position in positions {
-                    if cancelled() || Date() >= deadline { break }
-                    frame.reset()
-                    libvlc_media_player_set_position(player, position)
-                    guard let image = frame.wait(until: min(deadline, Date().addingTimeInterval(8)), cancelled: cancelled)
-                    else { continue }
-                    if firstUsable {
-                        if consider(image) { break }
-                    } else {
-                        results.append(image)
-                    }
-                }
-                if firstUsable, best == nil { _ = consider(first) }
-                if !firstUsable, results.isEmpty { results.append(first) }
-            } else {
-                // Short clip (or no length): watch a little longer for a frame that is not black.
-                var image = first
-                var tries = 0
-                while firstUsable, !consider(image), length > 0, tries < 6, !cancelled(), Date() < deadline {
-                    frame.reset()
-                    guard let next = frame.wait(until: min(deadline, Date().addingTimeInterval(1.5)), cancelled: cancelled)
-                    else { break }
-                    image = next
-                    tries += 1
-                }
-                if firstUsable, best == nil { _ = consider(first) }
-                if !firstUsable { results.append(first) }
+        // 1) Open once to learn the length (and to take the picture itself for stills / short clips).
+        guard let probe = Session(location: location, options: options, maxWidth: maxWidth,
+                                  minFrames: positions.isEmpty ? 1 : 3) else { return [] }
+        var length: Int64 = 0
+        var first: CGImage?
+        while Date() < deadline, !cancelled() {
+            length = libvlc_media_player_get_length(probe.player)
+            if length > 0 && !positions.isEmpty && length > 20_000 { break }
+            if let image = probe.frame(until: min(deadline, Date().addingTimeInterval(0.2)), cancelled: cancelled) {
+                first = image
+                length = libvlc_media_player_get_length(probe.player)
+                break
             }
         }
+        if positions.isEmpty || length <= 20_000 {
+            // Still picture, short clip or unknown length: what this player shows. For a clip, watch a little longer
+            // for a frame that is not black.
+            if let image = first {
+                if firstUsable {
+                    var current = image
+                    var tries = 0
+                    while !consider(current), !positions.isEmpty, length > 0, tries < 6, !cancelled(), Date() < deadline {
+                        probe.sink.reset()
+                        guard let next = probe.frame(until: min(deadline, Date().addingTimeInterval(1.5)), cancelled: cancelled)
+                        else { break }
+                        current = next
+                        tries += 1
+                    }
+                } else {
+                    results.append(image)
+                }
+            }
+            probe.close()
+            if cancelled() { return [] }
+            return firstUsable ? (best.map { [$0.image] } ?? []) : results
+        }
+        probe.close()
 
-        libvlc_media_player_stop(player)
-        libvlc_media_player_release(player)
-        Unmanaged<FrameSink>.fromOpaque(opaque).release()
+        // 2) One fresh player per spot, opened right there.
+        for position in positions {
+            if cancelled() || Date() >= deadline { break }
+            let start = Double(length) * Double(position) / 1000
+            guard let session = Session(location: location, options: options + [":start-time=\(start)"],
+                                        maxWidth: maxWidth, minFrames: 2) else { continue }
+            let image = session.frame(until: min(deadline, Date().addingTimeInterval(12)), cancelled: cancelled)
+            session.close()
+            guard let image else { continue }
+            if firstUsable {
+                if consider(image) { break }
+            } else {
+                results.append(image)
+            }
+        }
         if cancelled() { return [] }
         return firstUsable ? (best.map { [$0.image] } ?? []) : results
     }
@@ -177,6 +217,8 @@ private final class FrameSink: @unchecked Sendable {
     let minFrames: Int
     private(set) var buffer: UnsafeMutableRawPointer?
     private var width = 0, height = 0
+    /// The size libVLC decodes at (coded size, may include padding rows/columns).
+    private var sourceWidth = 0, sourceHeight = 0
     private var frames = 0
     private var image: CGImage?
     private let condition = NSCondition()
@@ -192,6 +234,7 @@ private final class FrameSink: @unchecked Sendable {
     func setup(chroma: UnsafeMutablePointer<CChar>?, width w: UnsafeMutablePointer<UInt32>?, height h: UnsafeMutablePointer<UInt32>?,
                pitches: UnsafeMutablePointer<UInt32>?, lines: UnsafeMutablePointer<UInt32>?) -> UInt32 {
         guard let chroma, let w, let h, let pitches, let lines, w.pointee > 0, h.pointee > 0 else { return 0 }
+        sourceWidth = Int(w.pointee); sourceHeight = Int(h.pointee)
         let scale = min(1, Double(maxWidth) / Double(w.pointee))
         width = max(2, Int(Double(w.pointee) * scale) & ~1)
         height = max(2, Int(Double(h.pointee) * scale) & ~1)
@@ -221,6 +264,19 @@ private final class FrameSink: @unchecked Sendable {
             condition.signal()
         }
         condition.unlock()
+    }
+
+    /// `image` without the padding outside the picture's visible `visibleWidth`×`visibleHeight` (in source pixels).
+    func crop(_ image: CGImage, visibleWidth: Int, visibleHeight: Int) -> CGImage {
+        condition.lock()
+        let sw = sourceWidth, sh = sourceHeight
+        condition.unlock()
+        guard sw > 0, sh > 0, visibleWidth > 0, visibleHeight > 0,
+              visibleWidth <= sw, visibleHeight <= sh, visibleWidth < sw || visibleHeight < sh else { return image }
+        let w = Int((Double(image.width) * Double(visibleWidth) / Double(sw)).rounded())
+        let h = Int((Double(image.height) * Double(visibleHeight) / Double(sh)).rounded())
+        guard w > 1, h > 1 else { return image }
+        return image.cropping(to: CGRect(x: 0, y: 0, width: w, height: h)) ?? image
     }
 
     func reset() {
