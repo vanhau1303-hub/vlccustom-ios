@@ -45,7 +45,7 @@ struct ContentView: View {
         if env["DEMO_SMB_THUMB"] == "1" {
             let login = await SmbRegistry.shared.login(for: host)
             let started = Date()
-            let image = await ThumbnailService.vlcSnapshot(host: host, path: file, login: login, width: 640, position: 0.1,
+            let image = await ThumbnailService.vlcSnapshot(host: host, path: file, login: login, width: 640, position: 0.25,
                                                            route: env["DEMO_SMB_ROUTE"] == "proxy" ? .proxy : .direct)
             let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
             PlaybackDiagnostics.append(image.map { "demo: thumb ok \($0.width)x\($0.height) in \(seconds)s" }
@@ -100,6 +100,7 @@ struct SettingsView: View {
     @State private var library: LibraryScreen?
     @State private var thumbnailBytes: Int64 = 0
     @AppStorage(ThumbnailPolicy.fastKey) private var fastThumbnails = true
+    @AppStorage(ThumbnailPolicy.animatedKey) private var animatedThumbnails = false
 
     var body: some View {
         NavigationStack {
@@ -128,6 +129,13 @@ struct SettingsView: View {
                     }
                 } footer: {
                     Text("Tạo 3 thumbnail cùng lúc và tạo trước cho cả thư mục. Khi mở video sẽ tự trở về chế độ bình thường (tạm dừng tạo thumbnail) để video không bị giật, đóng video thì chạy nhanh lại.")
+                }
+                Section {
+                    Toggle(isOn: $animatedThumbnails) {
+                        Label("Thumbnail động", systemImage: "play.rectangle.on.rectangle")
+                    }
+                } footer: {
+                    Text("Video trong thư mục SMB lần lượt hiện 6 cảnh (10% → 85% thời lượng). Các cảnh được tạo sau thumbnail thường, chỉ cho video đang hiện trên màn hình, và lưu lại cho lần sau. Tốn thêm thời gian tạo, khoảng 150KB mỗi video.")
                 }
                 Section {
                     HStack {

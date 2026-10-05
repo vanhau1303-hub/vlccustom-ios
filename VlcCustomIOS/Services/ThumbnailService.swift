@@ -12,6 +12,7 @@ actor ThumbnailService {
     static let shared = ThumbnailService()
 
     private let memoryCache = NSCache<NSString, UIImage>()
+    private let previewCache = NSCache<NSString, NSArray>()
     private let diskDirectory: URL
 
     /// Application Support/Thumbnails — the app's own storage, not Caches (which iOS empties whenever it likes, so
@@ -36,9 +37,17 @@ actor ThumbnailService {
             }
             try? FileManager.default.removeItem(at: old)
         }
+        // Thumbnails are now taken at 25% with black frames skipped (v0.42): the old ones (10%, some black) and the
+        // "no frame" markers are dropped once so everything is made again.
+        if !UserDefaults.standard.bool(forKey: "thumbs_v2") {
+            let files = (try? FileManager.default.contentsOfDirectory(at: Self.directory, includingPropertiesForKeys: nil)) ?? []
+            for file in files { try? FileManager.default.removeItem(at: file) }
+            UserDefaults.standard.set(true, forKey: "thumbs_v2")
+        }
         // Bounded by bytes, not just count: 300 decoded 480px thumbnails alone could take >100MB, on top of libVLC.
         memoryCache.countLimit = 200
         memoryCache.totalCostLimit = 40 * 1024 * 1024
+        previewCache.totalCostLimit = 30 * 1024 * 1024
     }
 
     private func cacheKey(_ source: String) -> String {
@@ -112,12 +121,12 @@ actor ThumbnailService {
         let login = await SmbRegistry.shared.login(for: host)
         var snapshot: CGImage?
         if !SmbRoutePreferences.prefersProxy(source) {
-            snapshot = await Self.vlcSnapshot(host: host, path: path, login: login, width: 640, position: 0.1)
+            snapshot = await Self.vlcSnapshot(host: host, path: path, login: login, width: 640, position: 0.25)
         }
         if snapshot == nil, !(await Self.videoIsPlaying()) {
             // libVLC's SMB module gave nothing (or is known not to work for this file): try the AMSMB2 proxy, the
             // way the Android app reads SMB. If that works, playback goes that way too from now on.
-            snapshot = await Self.vlcSnapshot(host: host, path: path, login: login, width: 640, position: 0.1, route: .proxy)
+            snapshot = await Self.vlcSnapshot(host: host, path: path, login: login, width: 640, position: 0.25, route: .proxy)
             if snapshot != nil {
                 SmbRoutePreferences.set(source, proxy: true)
                 PlaybackDiagnostics.append("thumb: \(path) works via proxy — remembered for playback")
@@ -436,15 +445,90 @@ actor ThumbnailService {
         }
     }
 
+    // MARK: - Thumbnail động (Cài đặt → "Thumbnail động", off by default)
+
+    /// Spots the moving thumbnail shows, one after another.
+    static let previewPositions: [Float] = [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]
+
+    private func previewURL(_ key: String, _ index: Int) -> URL {
+        diskDirectory.appendingPathComponent("\(key).p\(index).jpg")
+    }
+
+    /// Already-made frames for `source` (memory or disk), without generating anything.
+    func cachedPreview(source: String) -> [UIImage] {
+        let key = cacheKey(source)
+        if let cached = previewCache.object(forKey: key as NSString) as? [UIImage] { return cached }
+        var frames: [UIImage] = []
+        for i in 0..<Self.previewPositions.count {
+            guard let data = try? Data(contentsOf: previewURL(key, i)), let image = Self.downsample(data, maxDimension: 400)
+            else { continue }
+            frames.append(image)
+        }
+        if frames.count > 1 { rememberPreview(frames, key: key) }
+        return frames.count > 1 ? frames : []
+    }
+
+    private func rememberPreview(_ frames: [UIImage], key: String) {
+        let cost = frames.reduce(0) { $0 + Int($1.size.width * $1.size.height * 4) }
+        previewCache.setObject(frames as NSArray, forKey: key as NSString, cost: cost)
+    }
+
+    /// The frames of an SMB video's moving thumbnail: made once (one libVLC session seeking through the video,
+    /// in the same job slots as normal thumbnails, never while a video is open), then kept on disk.
+    func smbPreview(source: String, host: String, path: String) async -> [UIImage] {
+        if let running = previewInflight[source] { return await running.value }
+        let task = Task { await self.makeSmbPreview(source: source, host: host, path: path) }
+        previewInflight[source] = task
+        let result = await task.value
+        previewInflight[source] = nil
+        return result
+    }
+
+    private var previewInflight: [String: Task<[UIImage], Never>] = [:]
+
+    private func makeSmbPreview(source: String, host: String, path: String) async -> [UIImage] {
+        let existing = cachedPreview(source: source)
+        if !existing.isEmpty { return existing }
+        let key = cacheKey(source)
+        let none = diskDirectory.appendingPathComponent(key + ".p.none")
+        if FileManager.default.fileExists(atPath: none.path) { return [] }
+        await acquireSmbSlot()
+        defer { releaseSmbSlot() }
+        if Task.isCancelled { return [] }
+        if await Self.videoIsPlaying() { return [] }
+
+        let login = await SmbRegistry.shared.login(for: host)
+        let route: SmbPlaybackRoute = SmbRoutePreferences.prefersProxy(source) ? .proxy : .direct
+        guard let target = SmbPlayback.location(host: host, path: path, route: route, login: login) else { return [] }
+        let images = await VLCSnapshotter.frames(location: target.url, options: target.options, maxWidth: 400,
+                                                 positions: Self.previewPositions)
+        // Black / blank frames (fades, credits) are left out of the loop.
+        let frames = images.filter(VLCSnapshotter.isUsable).map { UIImage(cgImage: $0) }
+        guard frames.count > 1 else {
+            let busy = await Self.videoIsPlaying()
+            if !busy { FileManager.default.createFile(atPath: none.path, contents: nil) }
+            return []
+        }
+        for (i, frame) in frames.enumerated() {
+            if let data = frame.jpegData(compressionQuality: 0.7) { try? data.write(to: previewURL(key, i)) }
+        }
+        rememberPreview(frames, key: key)
+        return frames
+    }
+
     /// Memory only (the disk copies stay): used when the app goes to the background.
     func clearMemory() {
         memoryCache.removeAllObjects()
+        previewCache.removeAllObjects()
     }
 
     /// Drops one entry's thumbnail (and its "no frame / no cover" marker) so it is made again.
     func forget(source: String) {
         let key = cacheKey(source)
         memoryCache.removeObject(forKey: key as NSString)
+        previewCache.removeObject(forKey: key as NSString)
+        for i in 0..<Self.previewPositions.count { try? FileManager.default.removeItem(at: previewURL(key, i)) }
+        try? FileManager.default.removeItem(at: diskDirectory.appendingPathComponent(key + ".p.none"))
         try? FileManager.default.removeItem(at: diskURL(key))
         try? FileManager.default.removeItem(at: diskDirectory.appendingPathComponent(key + ".none"))
     }
@@ -457,6 +541,7 @@ actor ThumbnailService {
 
     func clearAll() {
         memoryCache.removeAllObjects()
+        previewCache.removeAllObjects()
         let files = (try? FileManager.default.contentsOfDirectory(at: diskDirectory, includingPropertiesForKeys: nil)) ?? []
         for file in files { try? FileManager.default.removeItem(at: file) }
     }

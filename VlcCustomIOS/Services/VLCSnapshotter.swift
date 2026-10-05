@@ -27,37 +27,81 @@ final class VLCSnapshotter: @unchecked Sendable {
     }
 
     /// One frame of `location` (with libVLC `options`, e.g. SMB login), at most `maxWidth` px wide, taken at
-    /// `position` (0…1) of the duration — or the first frame for short/unseekable files and still pictures.
-    static func snapshot(location: String, options: [String], maxWidth: Int = 640, position: Float = 0.1,
-                         timeout: TimeInterval = 18) async -> CGImage? {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: grab(location: location, options: options, maxWidth: maxWidth,
-                                                    position: position, timeout: timeout))
-            }
+    /// `position` (0…1) of the duration — or the first frame for short/unseekable files and still pictures (0).
+    /// A black / blank frame (fade, scene change, intro card) is not kept: other spots are tried in the same session
+    /// and the first one with a real picture wins (the brightest one if every spot is dark).
+    static func snapshot(location: String, options: [String], maxWidth: Int = 640, position: Float = 0.25,
+                         timeout: TimeInterval = 20) async -> CGImage? {
+        var positions: [Float] = []
+        if position > 0 {
+            for p in [position, 0.4, 0.6, 0.15, 0.75] where !positions.contains(p) { positions.append(p) }
         }
+        return await run { grab(location: location, options: options, maxWidth: maxWidth, positions: positions,
+                                firstUsable: true, timeout: timeout) }.first
+    }
+
+    /// Several frames of one video (thumbnail động): one libVLC session seeking from spot to spot. Spots that give no
+    /// frame are skipped.
+    static func frames(location: String, options: [String], maxWidth: Int, positions: [Float],
+                       timeout: TimeInterval = 45) async -> [CGImage] {
+        await run { grab(location: location, options: options, maxWidth: maxWidth, positions: positions,
+                         firstUsable: false, timeout: timeout) }
+    }
+
+    private static func run(_ work: @escaping @Sendable () -> [CGImage]) async -> [CGImage] {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async { continuation.resume(returning: work()) }
+        }
+    }
+
+    /// Mean brightness and spread (0…1) of a frame, from a 32×18 grey copy.
+    static func brightness(_ image: CGImage) -> (mean: Double, spread: Double) {
+        let w = 32, h = 18
+        var pixels = [UInt8](repeating: 0, count: w * h)
+        let drawn = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = CGContext(data: raw.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                          space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
+            else { return false }
+            context.interpolationQuality = .low
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drawn else { return (1, 1) }
+        let values = pixels.map { Double($0) / 255 }
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count)
+        return (mean, variance.squareRoot())
+    }
+
+    /// Not black, and not one flat colour (blank / half-decoded frame).
+    static func isUsable(_ image: CGImage) -> Bool {
+        let b = brightness(image)
+        return b.mean > 0.08 && b.spread > 0.035
     }
 
     // MARK: - Blocking implementation (background thread only)
 
-    private static func grab(location: String, options: [String], maxWidth: Int, position: Float, timeout: TimeInterval) -> CGImage? {
+    private static func grab(location: String, options: [String], maxWidth: Int, positions: [Float],
+                             firstUsable: Bool, timeout: TimeInterval) -> [CGImage] {
         let instance = VLCLibrary.shared().instance
         let startGeneration = generation
         let cancelled = { generation != startGeneration }
 
-        guard let media = libvlc_media_new_location(OpaquePointer(instance), location) else { return nil }
+        guard let media = libvlc_media_new_location(OpaquePointer(instance), location) else { return [] }
+        // No ":avcodec-skip-idct" any more: skipping the IDCT on every frame is what gave some software-decoded
+        // videos a black / grey thumbnail.
         for option in options + [":no-audio", ":no-spu", ":avcodec-threads=2", ":avcodec-skiploopfilter=4",
-                                 ":avcodec-skip-idct=4", ":deinterlace=0"] {
+                                 ":deinterlace=0"] {
             libvlc_media_add_option(media, option)
         }
         guard let player = libvlc_media_player_new_from_media(media) else {
             libvlc_media_release(media)
-            return nil
+            return []
         }
         libvlc_media_release(media)
 
         // A still picture is displayed once; for video the first frames are skipped (often black/half-decoded).
-        let frame = FrameSink(maxWidth: maxWidth, minFrames: position > 0 ? 3 : 1)
+        let frame = FrameSink(maxWidth: maxWidth, minFrames: positions.isEmpty ? 1 : 3)
         let opaque = Unmanaged.passRetained(frame).toOpaque()
         libvlc_video_set_callbacks(player, { opaque, planes in
             let sink = Unmanaged<FrameSink>.fromOpaque(opaque!).takeUnretainedValue()
@@ -73,23 +117,56 @@ final class VLCSnapshotter: @unchecked Sendable {
 
         libvlc_media_player_play(player)
         let deadline = Date().addingTimeInterval(timeout)
+        var results: [CGImage] = []
+        var best: (image: CGImage, score: Double)?
+        /// Keeps the best frame seen; true once one is good enough to stop looking.
+        func consider(_ image: CGImage) -> Bool {
+            let b = brightness(image)
+            let score = b.mean + b.spread
+            if best == nil || score > best!.score { best = (image, score) }
+            return b.mean > 0.08 && b.spread > 0.035
+        }
 
         // 1) first frames arrive
-        var image = frame.wait(until: deadline, cancelled: cancelled)
-        // 2) jump to the requested spot for a representative frame (skipped for short files / pictures)
-        let length = libvlc_media_player_get_length(player)
-        if image != nil, !cancelled(), position > 0, length > 20_000 {
-            frame.reset()
-            libvlc_media_player_set_position(player, position)
-            if let later = frame.wait(until: min(deadline, Date().addingTimeInterval(8)), cancelled: cancelled) {
-                image = later
+        if let first = frame.wait(until: deadline, cancelled: cancelled) {
+            let length = libvlc_media_player_get_length(player)
+            if !positions.isEmpty, length > 20_000 {
+                // 2) jump to each spot in turn
+                for position in positions {
+                    if cancelled() || Date() >= deadline { break }
+                    frame.reset()
+                    libvlc_media_player_set_position(player, position)
+                    guard let image = frame.wait(until: min(deadline, Date().addingTimeInterval(8)), cancelled: cancelled)
+                    else { continue }
+                    if firstUsable {
+                        if consider(image) { break }
+                    } else {
+                        results.append(image)
+                    }
+                }
+                if firstUsable, best == nil { _ = consider(first) }
+                if !firstUsable, results.isEmpty { results.append(first) }
+            } else {
+                // Short clip (or no length): watch a little longer for a frame that is not black.
+                var image = first
+                var tries = 0
+                while firstUsable, !consider(image), length > 0, tries < 6, !cancelled(), Date() < deadline {
+                    frame.reset()
+                    guard let next = frame.wait(until: min(deadline, Date().addingTimeInterval(1.5)), cancelled: cancelled)
+                    else { break }
+                    image = next
+                    tries += 1
+                }
+                if firstUsable, best == nil { _ = consider(first) }
+                if !firstUsable { results.append(first) }
             }
         }
 
         libvlc_media_player_stop(player)
         libvlc_media_player_release(player)
         Unmanaged<FrameSink>.fromOpaque(opaque).release()
-        return cancelled() ? nil : image
+        if cancelled() { return [] }
+        return firstUsable ? (best.map { [$0.image] } ?? []) : results
     }
 }
 

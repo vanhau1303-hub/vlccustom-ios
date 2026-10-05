@@ -8,13 +8,20 @@ struct VideoThumbnailView: View {
     let source: String
     let size: CGFloat
     @State private var image: UIImage?
+    @State private var frames: [UIImage] = []
+    @State private var frameIndex = 0
     @ObservedObject private var activity = PlaybackActivity.shared
     @ObservedObject private var events = ThumbnailEvents.shared
+    @AppStorage(ThumbnailPolicy.animatedKey) private var animated = false
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
-            if let image {
+            if animated, frames.count > 1 {
+                Image(uiImage: frames[frameIndex % frames.count]).resizable().scaledToFill()
+                    .id(frameIndex)
+                    .transition(.opacity)
+            } else if let image {
                 Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: "film").foregroundStyle(.secondary)
@@ -22,6 +29,24 @@ struct VideoThumbnailView: View {
         }
         .frame(width: size * 16 / 9, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        // Thumbnail động: only while the cell is on screen (the task stops when it scrolls away), and only once its
+        // normal thumbnail exists — the frames are made after it, never while a video is open.
+        .task(id: "\(source)#\(events.version)#\(animated)#\(image != nil)") {
+            frames = []
+            frameIndex = 0
+            guard animated, image != nil, let (host, path) = SmbUri.parse(source) else { return }
+            var loaded = await ThumbnailService.shared.cachedPreview(source: source)
+            if loaded.isEmpty, !activity.isBusy {
+                loaded = await ThumbnailService.shared.smbPreview(source: source, host: host, path: path)
+            }
+            guard loaded.count > 1, !Task.isCancelled else { return }
+            frames = loaded
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { break }
+                withAnimation(.easeInOut(duration: 0.35)) { frameIndex = (frameIndex + 1) % loaded.count }
+            }
+        }
         .task(id: "\(source)#\(events.version)") {
             image = await ThumbnailService.shared.cachedThumbnail(source: source)
             // While a video is streaming, only show thumbnails that already exist — generating one is another SMB

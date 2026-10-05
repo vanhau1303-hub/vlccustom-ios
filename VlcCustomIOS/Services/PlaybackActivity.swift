@@ -28,6 +28,8 @@ final class PlaybackActivity: ObservableObject {
 final class ThumbnailPolicy: @unchecked Sendable {
     static let shared = ThumbnailPolicy()
     static let fastKey = "thumbs_fast"
+    /// "Thumbnail động" — off unless switched on in Cài đặt.
+    static let animatedKey = "thumbs_animated"
 
     private let lock = NSLock()
     private var _fastEnabled: Bool
