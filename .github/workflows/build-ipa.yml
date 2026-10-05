@@ -5,6 +5,11 @@ name: Build unsigned IPA
 # or just by pushing to main.
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner label (macos-15, macos-15-intel, macos-14) — when one kind is short on capacity"
+        required: false
+        default: macos-15
   push:
     branches: [main, master]
     # macOS runners cost 10x the minutes of a Linux one (private repo) — don't burn them on doc-only pushes.
@@ -16,7 +21,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-15' }}
     steps:
       - uses: actions/checkout@v4
 
