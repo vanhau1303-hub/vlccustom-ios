@@ -93,6 +93,18 @@ struct SmbEntryOptionsSheet: View {
                     }
                 }
 
+                if entry.kind == .video {
+                    Section {
+                        NavigationLink {
+                            ForceThumbnailView(host: host, path: entry.path, name: entry.name)
+                        } label: {
+                            Label("Buộc lấy thumbnail…", systemImage: "camera.viewfinder")
+                        }
+                    } footer: {
+                        Text("Cho video không tự lấy được thumbnail (hoặc lấy ra hình không ưng): tự chọn vị trí và cách đọc file, xem trước rồi lưu.")
+                    }
+                }
+
                 Section("Thông tin") {
                     if !entry.isDirectory {
                         info("Dung lượng", ByteCountFormatter.string(fromByteCount: entry.sizeBytes, countStyle: .file))

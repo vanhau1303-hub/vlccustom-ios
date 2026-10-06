@@ -48,6 +48,13 @@ final class VLCSnapshotter: @unchecked Sendable {
                          firstUsable: false, timeout: timeout) }
     }
 
+    /// Exactly the frame at `position`, dark or not, with a long time limit — "Buộc lấy thumbnail".
+    static func frame(location: String, options: [String], maxWidth: Int, position: Float,
+                      timeout: TimeInterval = 60) async -> CGImage? {
+        await run { grab(location: location, options: options, maxWidth: maxWidth, positions: [position],
+                         firstUsable: false, timeout: timeout, spotTimeout: timeout - 8) }.first
+    }
+
     private static func run(_ work: @escaping @Sendable () -> [CGImage]) async -> [CGImage] {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async { continuation.resume(returning: work()) }
@@ -138,7 +145,7 @@ final class VLCSnapshotter: @unchecked Sendable {
     /// most Blu-ray rips), so whole folders got black thumbnails. Opening at the spot, the first frames shown are
     /// from there. Checked on the user's files with libVLC 3.0.23 (Cast Away, Forrest Gump, The Green Mile...).
     private static func grab(location: String, options: [String], maxWidth: Int, positions: [Float],
-                             firstUsable: Bool, timeout: TimeInterval) -> [CGImage] {
+                             firstUsable: Bool, timeout: TimeInterval, spotTimeout: TimeInterval = 12) -> [CGImage] {
         let startGeneration = generation
         let cancelled = { generation != startGeneration }
         let deadline = Date().addingTimeInterval(timeout)
@@ -196,7 +203,7 @@ final class VLCSnapshotter: @unchecked Sendable {
         // 2) One fresh player per spot, opened right there.
         let reserve: TimeInterval = 6
         for position in positions {
-            let spotDeadline = min(deadline.addingTimeInterval(-reserve), Date().addingTimeInterval(12))
+            let spotDeadline = min(deadline.addingTimeInterval(-reserve), Date().addingTimeInterval(spotTimeout))
             if cancelled() || Date() >= spotDeadline { break }
             let start = Double(length) * Double(position) / 1000
             guard let session = Session(location: location, options: options + [":start-time=\(start)"],

@@ -522,6 +522,14 @@ actor ThumbnailService {
         previewCache.removeAllObjects()
     }
 
+    /// A frame the user picked ("Buộc lấy thumbnail") becomes the thumbnail, replacing any "no frame" marker.
+    func setThumbnail(_ image: UIImage, source: String) {
+        forget(source: source)
+        let key = cacheKey(source)
+        remember(image, key: key)
+        saveToDisk(image, key: key)
+    }
+
     /// Drops one entry's thumbnail (and its "no frame / no cover" marker) so it is made again.
     func forget(source: String) {
         let key = cacheKey(source)
