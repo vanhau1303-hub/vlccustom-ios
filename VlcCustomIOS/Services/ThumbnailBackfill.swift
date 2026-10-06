@@ -4,7 +4,7 @@ import SwiftUI
 /// Makes the missing thumbnails of every SMB folder already opened, in the background, one at a time — so going
 /// back to a folder shows its pictures at once. Playback comes first: while a video is open it waits, and it only
 /// starts a job when no thumbnail for the folder on screen is being made (those always go first).
-/// Cài đặt → "Tạo thumbnail nền cho thư mục đã xem" (on by default); progress in `ThumbnailBackfillBar`.
+/// Cài đặt → "Thumbnail nền" (on by default): progress and every remembered folder with its state.
 @MainActor
 final class ThumbnailBackfill: ObservableObject {
     static let shared = ThumbnailBackfill()
@@ -29,8 +29,18 @@ final class ThumbnailBackfill: ObservableObject {
     @Published private(set) var foldersLeft = 0
     @Published var userPaused = false
     @Published private(set) var visitedCount = 0
+    /// Remembered folders, most recently opened first.
+    @Published private(set) var visited: [Folder]
+    /// What happened to each folder in this session.
+    @Published private(set) var states: [Folder: FolderState] = [:]
 
-    private var visited: [Folder]
+    enum FolderState: Equatable {
+        case waiting, scanning
+        case working(done: Int, total: Int)
+        case complete(made: Int)
+        case unreachable
+    }
+
     private var queue: [Folder] = []
     private var finished: Set<Folder> = []
     private var task: Task<Void, Never>?
@@ -53,13 +63,19 @@ final class ThumbnailBackfill: ObservableObject {
         if let data = try? JSONEncoder().encode(visited) { UserDefaults.standard.set(data, forKey: Self.visitedKey) }
         // The folder on screen is handled by its own view right now; here it only needs a pass later (sub-folders'
         // mosaics, and whatever the view did not get to before the user left).
-        if !finished.contains(folder), !queue.contains(folder) { queue.append(folder) }
+        if !finished.contains(folder), !queue.contains(folder) {
+            queue.append(folder)
+            states[folder] = .waiting
+        }
         start()
     }
 
     /// App start: go through every remembered folder.
     func startAll() {
-        for folder in visited where !finished.contains(folder) && !queue.contains(folder) { queue.append(folder) }
+        for folder in visited where !finished.contains(folder) && !queue.contains(folder) {
+            queue.append(folder)
+            states[folder] = .waiting
+        }
         start()
     }
 
@@ -68,7 +84,22 @@ final class ThumbnailBackfill: ObservableObject {
         if on { startAll() } else { stop() }
     }
 
+    /// Runs every remembered folder again now (e.g. after deleting thumbnails).
+    func restartAll() {
+        finished = []
+        startAll()
+    }
+
+    func forget(_ folder: Folder) {
+        visited.removeAll { $0 == folder }
+        queue.removeAll { $0 == folder }
+        states[folder] = nil
+        visitedCount = visited.count
+        if let data = try? JSONEncoder().encode(visited) { UserDefaults.standard.set(data, forKey: Self.visitedKey) }
+    }
+
     func forgetFolders() {
+        states = [:]
         visited = []
         visitedCount = 0
         UserDefaults.standard.removeObject(forKey: Self.visitedKey)
@@ -105,9 +136,13 @@ final class ThumbnailBackfill: ObservableObject {
 
     private func process(_ folder: Folder) async {
         phase = .scanning
+        states[folder] = .scanning
         folderName = folder.path.split(separator: "/").last.map(String.init) ?? folder.path
         guard let connection = await SmbRegistry.shared.getOrReconnect(folder.host),
-              let items = try? await connection.list(path: folder.path) else { return }
+              let items = try? await connection.list(path: folder.path) else {
+            states[folder] = .unreachable
+            return
+        }
         let service = ThumbnailService.shared
         let animated = UserDefaults.standard.bool(forKey: ThumbnailPolicy.animatedKey)
 
@@ -121,9 +156,13 @@ final class ThumbnailBackfill: ObservableObject {
                 if await service.needsPreview(source: "smb://\(folder.host)/\(entry.path)") { jobs.append((entry, true)) }
             }
         }
-        guard !jobs.isEmpty else { return }
+        guard !jobs.isEmpty else {
+            states[folder] = .complete(made: 0)
+            return
+        }
         total = jobs.count
         done = 0
+        states[folder] = .working(done: 0, total: jobs.count)
 
         for job in jobs {
             if Task.isCancelled { return }
@@ -138,8 +177,10 @@ final class ThumbnailBackfill: ObservableObject {
                 attempts += 1
             } while PlaybackActivity.shared.isBusy && attempts < 5
             done += 1
+            states[folder] = .working(done: done, total: total)
             if done % 4 == 0 { ThumbnailEvents.shared.changed() }
         }
+        states[folder] = .complete(made: total)
     }
 
     private func make(_ entry: SmbEntry, preview: Bool, host: String, source: String) async {
@@ -174,55 +215,118 @@ final class ThumbnailBackfill: ObservableObject {
     }
 }
 
-/// Slim status bar above the tab bar while background thumbnails are being made.
-struct ThumbnailBackfillBar: View {
+/// Current state of the background pass, for Cài đặt.
+struct ThumbnailBackfillStatusRow: View {
     @ObservedObject private var backfill = ThumbnailBackfill.shared
 
     var body: some View {
-        if backfill.phase != .idle, backfill.total > 0 {
-            HStack(spacing: 10) {
-                Image(systemName: icon).foregroundStyle(.secondary).frame(width: 18)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 4) {
-                        Text(title).lineLimit(1).truncationMode(.middle)
-                        Spacer(minLength: 4)
+        HStack(spacing: 10) {
+            Image(systemName: icon).foregroundStyle(.secondary).frame(width: 22)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
+                    Text(title).lineLimit(2).truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    if backfill.phase != .idle, backfill.total > 0 {
                         Text("\(backfill.done)/\(backfill.total)").monospacedDigit().foregroundStyle(.secondary)
                     }
-                    .font(.caption)
-                    ProgressView(value: Double(backfill.done), total: Double(max(1, backfill.total)))
-                        .progressViewStyle(.linear)
                 }
+                .font(.subheadline)
+                if backfill.phase != .idle, backfill.total > 0 {
+                    ProgressView(value: Double(backfill.done), total: Double(max(1, backfill.total)))
+                }
+            }
+            if backfill.phase != .idle {
                 Button {
                     backfill.userPaused.toggle()
                 } label: {
-                    Image(systemName: backfill.userPaused ? "play.fill" : "pause.fill").frame(width: 28, height: 28)
+                    Image(systemName: backfill.userPaused ? "play.fill" : "pause.fill").frame(width: 30, height: 30)
                 }
                 .buttonStyle(.borderless)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .padding(.horizontal, 8)
-            .padding(.bottom, 4)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
+        .padding(.vertical, 2)
     }
 
     private var title: String {
-        let more = backfill.foldersLeft > 0 ? " (+\(backfill.foldersLeft) thư mục)" : ""
+        let more = backfill.foldersLeft > 0 ? " (+\(backfill.foldersLeft) thư mục chờ)" : ""
         switch backfill.phase {
-        case .paused: return "Đã tạm dừng tạo thumbnail · \(backfill.folderName)"
+        case .idle: return "Không có gì cần làm — thumbnail các thư mục đã xem đã đủ"
+        case .scanning: return "Đang xem thư mục \(backfill.folderName)…"
+        case .paused: return "Đã tạm dừng · \(backfill.folderName)"
         case .waitingForVideo: return "Chờ xem xong video · \(backfill.folderName)"
-        case .waitingForScreen: return "Ưu tiên thư mục đang mở · \(backfill.folderName)"
-        default: return "Tạo thumbnail · \(backfill.folderName)\(more)"
+        case .waitingForScreen: return "Nhường thư mục đang mở · \(backfill.folderName)"
+        case .working: return "Đang tạo · \(backfill.folderName)\(more)"
         }
     }
 
     private var icon: String {
         switch backfill.phase {
+        case .idle: return "checkmark.circle"
         case .paused: return "pause.circle"
         case .waitingForVideo: return "play.rectangle"
         default: return "photo.stack"
+        }
+    }
+}
+
+/// Every remembered folder and what the background pass did with it.
+struct ThumbnailBackfillFoldersView: View {
+    @ObservedObject private var backfill = ThumbnailBackfill.shared
+
+    var body: some View {
+        List {
+            Section { ThumbnailBackfillStatusRow() }
+            Section {
+                ForEach(backfill.visited, id: \.self) { folder in
+                    HStack(spacing: 10) {
+                        Image(systemName: "folder").foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(folder.path.split(separator: "/").last.map(String.init) ?? folder.path)
+                                .lineLimit(1).truncationMode(.middle)
+                            Text("\(folder.host)/\(folder.path)").font(.caption2).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.head)
+                        }
+                        Spacer(minLength: 8)
+                        stateView(backfill.states[folder])
+                    }
+                    .swipeActions {
+                        Button("Quên", role: .destructive) { backfill.forget(folder) }
+                    }
+                }
+            } header: {
+                Text("Thư mục đã xem (\(backfill.visited.count))")
+            } footer: {
+                Text("Vuốt sang trái để bỏ một thư mục khỏi danh sách.")
+            }
+            Section {
+                Button("Kiểm tra lại tất cả ngay") { backfill.restartAll() }
+                Button("Quên toàn bộ danh sách", role: .destructive) { backfill.forgetFolders() }
+            }
+        }
+        .navigationTitle("Thumbnail nền")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private func stateView(_ state: ThumbnailBackfill.FolderState?) -> some View {
+        switch state {
+        case .waiting?:
+            Text("Đang chờ").font(.caption).foregroundStyle(.secondary)
+        case .scanning?:
+            ProgressView().controlSize(.small)
+        case .working(let done, let total)?:
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("\(done)/\(total)").font(.caption).monospacedDigit()
+                ProgressView(value: Double(done), total: Double(max(1, total))).frame(width: 60)
+            }
+        case .complete(let made)?:
+            Label(made > 0 ? "Xong (+\(made))" : "Đủ", systemImage: "checkmark.circle.fill")
+                .font(.caption).foregroundStyle(.green).labelStyle(.titleAndIcon)
+        case .unreachable?:
+            Label("Không mở được", systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.orange)
+        case nil:
+            Text("—").font(.caption).foregroundStyle(.secondary)
         }
     }
 }

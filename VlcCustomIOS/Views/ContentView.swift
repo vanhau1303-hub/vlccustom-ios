@@ -18,7 +18,9 @@ struct ContentView: View {
             SettingsView()
                 .tabItem { Label("Cài đặt", systemImage: "gearshape") }.tag(2)
         }
-        .safeAreaInset(edge: .bottom) { ThumbnailBackfillBar() }
+        // Scrolling a list closes the keyboard too.
+        .scrollDismissesKeyboard(.immediately)
+        .onAppear { DispatchQueue.main.async { KeyboardDismisser.shared.install() } }
         .musicPlayerHost()
         .background(
             EmptyView().fullScreenCover(isPresented: $demoPlaying) {
@@ -143,16 +145,22 @@ struct SettingsView: View {
                         Label("Tạo thumbnail nền cho thư mục đã xem", systemImage: "square.stack.3d.down.right")
                     }
                     .onChange(of: backfillThumbnails) { on in backfill.setEnabled(on) }
-                    if backfill.visitedCount > 0 {
+                    if backfillThumbnails {
+                        ThumbnailBackfillStatusRow()
+                    }
+                    NavigationLink {
+                        ThumbnailBackfillFoldersView()
+                    } label: {
                         HStack {
-                            Text("Thư mục đã ghi nhớ")
+                            Label("Thư mục đã xem", systemImage: "folder.badge.gearshape")
                             Spacer()
                             Text("\(backfill.visitedCount)").foregroundStyle(.secondary)
                         }
-                        Button("Quên danh sách thư mục", role: .destructive) { backfill.forgetFolders() }
                     }
+                } header: {
+                    Text("Thumbnail nền")
                 } footer: {
-                    Text("Tự tạo thumbnail còn thiếu cho các thư mục SMB đã từng mở, từng cái một, có thanh tiến trình phía trên thanh tab. Khi đang xem video sẽ tự chờ, và luôn nhường cho thư mục đang mở trên màn hình.")
+                    Text("Tự tạo thumbnail còn thiếu cho các thư mục SMB đã từng mở, từng cái một. Khi đang xem video sẽ tự chờ, và luôn nhường cho thư mục đang mở trên màn hình.")
                 }
                 Section {
                     Toggle(isOn: $animatedThumbnails) {

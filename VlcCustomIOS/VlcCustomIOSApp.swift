@@ -62,3 +62,38 @@ enum OrientationLock {
         }
     }
 }
+
+/// Tapping anywhere outside a text field closes the keyboard (search boxes, login and server fields...) — one tap
+/// recognizer on the window, which never swallows the tap itself, so buttons and rows still work as usual.
+final class KeyboardDismisser: NSObject, UIGestureRecognizerDelegate {
+    static let shared = KeyboardDismisser()
+    private weak var window: UIWindow?
+
+    func install() {
+        guard let window = UIApplication.shared.connectedScenes
+            .compactMap({ ($0 as? UIWindowScene)?.windows.first(where: \.isKeyWindow) ?? ($0 as? UIWindowScene)?.windows.first })
+            .first, window !== self.window else { return }
+        self.window = window
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        window.addGestureRecognizer(tap)
+    }
+
+    @objc private func tapped(_ recognizer: UITapGestureRecognizer) {
+        recognizer.view?.endEditing(true)
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        // Taps inside a text field place the cursor as usual.
+        var view = touch.view
+        while let current = view {
+            if current is UITextField || current is UITextView || current is UISearchBar { return false }
+            view = current.superview
+        }
+        return true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+}
