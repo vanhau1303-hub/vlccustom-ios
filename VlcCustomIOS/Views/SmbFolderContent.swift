@@ -118,6 +118,10 @@ struct SmbFolderContent: View {
         content
             // "Ưu tiên tạo thumbnail nhanh": make the whole folder's thumbnails ahead of the scroll.
             .task(id: entries.map(\.path).joined(separator: "|")) {
+                // Remembered for the background pass (thumbnails of folders already visited).
+                if !showsParentPath, let first = entries.first {
+                    ThumbnailBackfill.shared.visit(host: host, path: (first.path as NSString).deletingLastPathComponent)
+                }
                 guard ThumbnailPolicy.shared.isFast, !entries.isEmpty else { return }
                 await ThumbnailService.shared.prefill(host: host, entries: entries)
             }

@@ -18,6 +18,7 @@ struct ContentView: View {
             SettingsView()
                 .tabItem { Label("Cài đặt", systemImage: "gearshape") }.tag(2)
         }
+        .safeAreaInset(edge: .bottom) { ThumbnailBackfillBar() }
         .musicPlayerHost()
         .background(
             EmptyView().fullScreenCover(isPresented: $demoPlaying) {
@@ -26,6 +27,11 @@ struct ContentView: View {
         )
         .task {
             if let tab = Self.demoTab() { navigator.selectedTab = tab }
+            // Background thumbnails for folders already visited, a little after start (SMB logins first).
+            Task {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                ThumbnailBackfill.shared.startAll()
+            }
             await startDemoSmbPlayback()
         }
     }
@@ -101,6 +107,8 @@ struct SettingsView: View {
     @State private var thumbnailBytes: Int64 = 0
     @AppStorage(ThumbnailPolicy.fastKey) private var fastThumbnails = true
     @AppStorage(ThumbnailPolicy.animatedKey) private var animatedThumbnails = false
+    @AppStorage(ThumbnailBackfill.enabledKey) private var backfillThumbnails = true
+    @ObservedObject private var backfill = ThumbnailBackfill.shared
 
     var body: some View {
         NavigationStack {
@@ -129,6 +137,22 @@ struct SettingsView: View {
                     }
                 } footer: {
                     Text("Tạo 3 thumbnail cùng lúc và tạo trước cho cả thư mục. Khi mở video sẽ tự trở về chế độ bình thường (tạm dừng tạo thumbnail) để video không bị giật, đóng video thì chạy nhanh lại.")
+                }
+                Section {
+                    Toggle(isOn: $backfillThumbnails) {
+                        Label("Tạo thumbnail nền cho thư mục đã xem", systemImage: "square.stack.3d.down.right")
+                    }
+                    .onChange(of: backfillThumbnails) { on in backfill.setEnabled(on) }
+                    if backfill.visitedCount > 0 {
+                        HStack {
+                            Text("Thư mục đã ghi nhớ")
+                            Spacer()
+                            Text("\(backfill.visitedCount)").foregroundStyle(.secondary)
+                        }
+                        Button("Quên danh sách thư mục", role: .destructive) { backfill.forgetFolders() }
+                    }
+                } footer: {
+                    Text("Tự tạo thumbnail còn thiếu cho các thư mục SMB đã từng mở, từng cái một, có thanh tiến trình phía trên thanh tab. Khi đang xem video sẽ tự chờ, và luôn nhường cho thư mục đang mở trên màn hình.")
                 }
                 Section {
                     Toggle(isOn: $animatedThumbnails) {

@@ -522,6 +522,26 @@ actor ThumbnailService {
         previewCache.removeAllObjects()
     }
 
+    /// No thumbnail and no "nothing to show" marker yet (disk check only) — for the background pass.
+    func needsThumbnail(source: String) -> Bool {
+        let key = cacheKey(source)
+        let fm = FileManager.default
+        return !fm.fileExists(atPath: diskURL(key).path)
+            && !fm.fileExists(atPath: diskDirectory.appendingPathComponent(key + ".none").path)
+    }
+
+    /// No moving-thumbnail frames and no marker yet.
+    func needsPreview(source: String) -> Bool {
+        let key = cacheKey(source)
+        let fm = FileManager.default
+        return !fm.fileExists(atPath: previewURL(key, 0).path)
+            && !fm.fileExists(atPath: diskDirectory.appendingPathComponent(key + ".p.none").path)
+    }
+
+    /// No SMB thumbnail job running or waiting — the background pass only starts one then, so the folder on
+    /// screen always goes first.
+    var isIdle: Bool { smbActive == 0 && smbWaiters.isEmpty }
+
     /// A frame the user picked ("Buộc lấy thumbnail") becomes the thumbnail, replacing any "no frame" marker.
     func setThumbnail(_ image: UIImage, source: String) {
         forget(source: source)
