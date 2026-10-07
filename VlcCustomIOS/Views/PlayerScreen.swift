@@ -10,8 +10,12 @@ struct PlayerScreen: View {
     let onClose: () -> Void
     @StateObject private var queue = PlaybackQueue.shared
     @StateObject private var player = VlcPlayerController()
-    @State private var seeking = false
-    @State private var sliderValue: Double = 0
+    /// Seek-bar scrubbing, observed only by the time row (scrubbing used to redraw the whole player per movement).
+    @State private var scrub = ScrubState()
+    /// Gesture bookkeeping the screen never draws (see `GestureScratch`).
+    @State private var scratch = GestureScratch()
+    /// The "+12s" / "Âm lượng 40%" bubble, observed only by its own small view.
+    @State private var hint = GestureHint()
     @State private var showControls = true
     @State private var showTrackPicker = false
     @State private var showPictureControls = false
@@ -23,13 +27,6 @@ struct PlayerScreen: View {
     // Gesture state — mirrors the Android player: horizontal drag seeks, vertical drag on the left half adjusts
     // screen brightness and on the right half adjusts VLC's own volume, double-tap on either side skips ±30s and
     // double-tap in the middle toggles play/pause.
-    @State private var dragMode: PlayerDragMode?
-    @State private var dragBaseValue: Double = 0
-    @State private var seekPreviewMs: Int?
-    @State private var gestureHint: String?
-    @State private var controlsHideToken = 0
-    /// Rate to go back to when the press-and-hold 2× boost ends.
-    @State private var speedBoostFrom: Float?
     @State private var showQueue = false
     /// AI subtitles were on for the previous episode: they start on their own for this one once its length is known.
     @State private var continueSubtitles = false
@@ -63,10 +60,10 @@ struct PlayerScreen: View {
                     LongPressGesture(minimumDuration: 0.45)
                         .sequenced(before: DragGesture(minimumDistance: 0))
                         .onChanged { value in
-                            if case .second(true, _) = value, speedBoostFrom == nil, dragMode == nil {
-                                speedBoostFrom = player.playbackRate
+                            if case .second(true, _) = value, scratch.speedBoostFrom == nil, scratch.dragMode == nil {
+                                scratch.speedBoostFrom = player.playbackRate
                                 player.playbackRate = 2.0
-                                gestureHint = "2× ▶▶"
+                                hint.set("2× ▶▶")
                                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                             }
                         }
@@ -81,13 +78,7 @@ struct PlayerScreen: View {
                 .allowsHitTesting(false)
             }
 
-            if let gestureHint {
-                Text(gestureHint)
-                    .font(.headline).foregroundStyle(.white)
-                    .padding(.horizontal, 16).padding(.vertical, 8)
-                    .background(Color.black.opacity(0.7))
-                    .clipShape(Capsule())
-            }
+            GestureHintView(hint: hint)
 
             LiveCueOverlay(clock: player.clock, live: live)
                 .padding(.bottom, showControls ? 230 : 28)
@@ -130,18 +121,18 @@ struct PlayerScreen: View {
 
                     VStack(spacing: 14) {
                         HStack(spacing: 10) {
-                            PlayerTimeRow(clock: player.clock, live: live, seeking: seeking, sliderValue: sliderValue,
-                                    onScrub: { fraction in
-                                        seeking = true
-                                        sliderValue = fraction
+                            PlayerTimeRow(clock: player.clock, live: live, scrub: scrub,
+                                    onScrub: { [scrub] fraction in
+                                        scrub.seeking = true
+                                        scrub.value = fraction
                                         keepControlsVisible()
                                     },
-                                    onCommit: { fraction in
-                                        sliderValue = fraction
+                                    onCommit: { [scrub] fraction in
+                                        scrub.value = fraction
                                         player.seek(to: fraction)
                                         keepControlsVisible()
                                         // Hold the new position until VLC reports it, instead of snapping back.
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { seeking = false }
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { scrub.seeking = false }
                                     })
                         }
                         HStack(spacing: 36) {
@@ -284,12 +275,18 @@ struct PlayerScreen: View {
     }
 
     /// Shows the controls and hides them again after 4s of no interaction while playing.
+    /// Pushes the auto-hide of the controls 4 s further. One timer at a time (this runs on every scrub movement:
+    /// it used to bump a @State counter — a full redraw — and start a new task each time).
     private func keepControlsVisible() {
-        controlsHideToken += 1
-        let token = controlsHideToken
-        Task {
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if token == controlsHideToken, player.isPlaying, !seeking, !showTrackPicker, !showPictureControls, !showSpeechDialog, !showQueue {
+        scratch.hideAt = Date().addingTimeInterval(4)
+        guard !scratch.hideTimerRunning else { return }
+        scratch.hideTimerRunning = true
+        Task { @MainActor in
+            while scratch.hideAt > Date() {
+                try? await Task.sleep(nanoseconds: UInt64(max(0.05, scratch.hideAt.timeIntervalSinceNow) * 1_000_000_000))
+            }
+            scratch.hideTimerRunning = false
+            if player.isPlaying, !scrub.seeking, !showTrackPicker, !showPictureControls, !showSpeechDialog, !showQueue {
                 withAnimation(.easeInOut(duration: 0.25)) { showControls = false }
             }
         }
@@ -320,72 +317,72 @@ struct PlayerScreen: View {
     private func playerDragGesture(in size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 16)
             .onChanged { value in
-                if dragMode == nil {
+                if scratch.dragMode == nil {
                     let dx = abs(value.translation.width)
                     let dy = abs(value.translation.height)
                     if dx > dy, value.startLocation.x < 30, value.translation.width > 0 {
                         // Swipe in from the left edge = back (close the player), like everywhere else in the app.
-                        dragMode = .edgeBack
+                        scratch.dragMode = .edgeBack
                     } else if dx > dy {
-                        dragMode = .seek
-                        seekPreviewMs = Int(player.time)
+                        scratch.dragMode = .seek
+                        scratch.seekPreviewMs = Int(player.time)
                     } else if value.startLocation.x < size.width / 2 {
-                        dragMode = .brightness
-                        dragBaseValue = Double(UIScreen.main.brightness)
+                        scratch.dragMode = .brightness
+                        scratch.dragBaseValue = Double(UIScreen.main.brightness)
                     } else {
-                        dragMode = .volume
-                        dragBaseValue = Double(SystemVolume.current)
+                        scratch.dragMode = .volume
+                        scratch.dragBaseValue = Double(SystemVolume.current)
                     }
                 }
-                switch dragMode {
+                switch scratch.dragMode {
                 case .seek:
                     guard player.duration > 0 else { return }
                     let deltaMs = Int(Double(value.translation.width / size.width) * 120_000)
                     let newMs = max(0, min(Int(player.duration), Int(player.time) + deltaMs))
-                    seekPreviewMs = newMs
-                    gestureHint = (deltaMs >= 0 ? "+" : "") + "\(deltaMs / 1000)s"
+                    scratch.seekPreviewMs = newMs
+                    hint.set((deltaMs >= 0 ? "+" : "") + "\(deltaMs / 1000)s  →  " + PlayerTimeRow.format(Int32(newMs)))
                 case .brightness:
                     let delta = Double(-value.translation.height / size.height)
-                    let newValue = min(1, max(0, dragBaseValue + delta))
+                    let newValue = min(1, max(0, scratch.dragBaseValue + delta))
                     UIScreen.main.brightness = newValue
-                    gestureHint = "Độ sáng \(Int(newValue * 100))%"
+                    hint.set("Độ sáng \(Int(newValue * 100))%")
                 case .volume:
                     // System volume: applies instantly (libVLC's own volume lagged behind its audio buffer).
                     let delta = Double(-value.translation.height / size.height) * 1.5
-                    let newValue = min(1, max(0, dragBaseValue + delta))
+                    let newValue = min(1, max(0, scratch.dragBaseValue + delta))
                     SystemVolume.set(Float(newValue))
-                    gestureHint = "Âm lượng \(Int((newValue * 100).rounded()))%"
+                    hint.set("Âm lượng \(Int((newValue * 100).rounded()))%")
                 case .edgeBack:
-                    gestureHint = value.translation.width > 90 ? "← Thoát" : nil
+                    hint.set(value.translation.width > 90 ? "← Thoát" : nil)
                 case .none:
                     break
                 }
             }
             .onEnded { value in
-                if dragMode == .seek, let seekPreviewMs, player.duration > 0 {
-                    player.seek(to: Double(seekPreviewMs) / Double(player.duration))
+                if scratch.dragMode == .seek, let target = scratch.seekPreviewMs, player.duration > 0 {
+                    player.seek(to: Double(target) / Double(player.duration))
                 }
-                if dragMode == .edgeBack, value.translation.width > 90 || value.predictedEndTranslation.width > 200 {
+                if scratch.dragMode == .edgeBack, value.translation.width > 90 || value.predictedEndTranslation.width > 200 {
                     close()
                 }
-                dragMode = nil
-                seekPreviewMs = nil
-                gestureHint = nil
+                scratch.dragMode = nil
+                scratch.seekPreviewMs = nil
+                hint.set(nil)
             }
     }
 
     private func endSpeedBoost() {
-        guard let rate = speedBoostFrom else { return }
+        guard let rate = scratch.speedBoostFrom else { return }
         player.playbackRate = rate
-        speedBoostFrom = nil
-        if gestureHint == "2× ▶▶" { gestureHint = nil }
+        scratch.speedBoostFrom = nil
+        if hint.text == "2× ▶▶" { hint.set(nil) }
     }
 
     private func showHint(_ text: String) {
-        gestureHint = text
-        Task {
+        hint.set(text)
+        Task { @MainActor [hint] in
             try? await Task.sleep(nanoseconds: 700_000_000)
-            if gestureHint == text { gestureHint = nil }
+            if hint.text == text { hint.set(nil) }
         }
     }
 
@@ -981,15 +978,14 @@ final class PlaybackClock: ObservableObject {
 private struct PlayerTimeRow: View {
     @ObservedObject var clock: PlaybackClock
     let live: LiveSubtitles
-    let seeking: Bool
-    let sliderValue: Double
+    @ObservedObject var scrub: ScrubState
     let onScrub: (Double) -> Void
     let onCommit: (Double) -> Void
 
     var body: some View {
-        Text(Self.format(seeking ? Int32(sliderValue * Double(clock.duration)) : clock.time))
+        Text(Self.format(scrub.seeking ? Int32(scrub.value * Double(clock.duration)) : clock.time))
             .foregroundStyle(.white).font(.caption).monospacedDigit()
-        SeekBar(progress: seeking ? sliderValue : clock.progress, onScrub: onScrub, onCommit: onCommit)
+        SeekBar(progress: scrub.seeking ? scrub.value : clock.progress, onScrub: onScrub, onCommit: onCommit)
             .overlay { SubtitleMarksBar(live: live).offset(y: 7).allowsHitTesting(false) }
         Text(Self.format(clock.duration)).foregroundStyle(.white).font(.caption).monospacedDigit()
     }
@@ -1091,6 +1087,45 @@ private struct SubtitleMarksBar: View {
                 }
             }
             .frame(height: 3)
+        }
+    }
+}
+
+/// Seek-bar scrubbing state, observed only by `PlayerTimeRow`.
+final class ScrubState: ObservableObject {
+    @Published var seeking = false
+    @Published var value: Double = 0
+}
+
+/// What the player's gestures keep between movements but never draw — a plain object held in @State, so writing
+/// to it does not redraw the player (it did, 60–120 times a second while a finger moved: seek / volume / brightness).
+private final class GestureScratch {
+    var dragMode: PlayerDragMode?
+    var dragBaseValue: Double = 0
+    var seekPreviewMs: Int?
+    /// Rate to go back to when the press-and-hold 2× boost ends.
+    var speedBoostFrom: Float?
+    var hideAt = Date.distantPast
+    var hideTimerRunning = false
+}
+
+/// The gesture bubble's text; only `GestureHintView` observes it.
+final class GestureHint: ObservableObject {
+    @Published private(set) var text: String?
+    func set(_ new: String?) { if text != new { text = new } }
+}
+
+private struct GestureHintView: View {
+    @ObservedObject var hint: GestureHint
+
+    var body: some View {
+        if let text = hint.text {
+            Text(text)
+                .font(.headline.monospacedDigit()).foregroundStyle(.white)
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .background(Color.black.opacity(0.7))
+                .clipShape(Capsule())
+                .allowsHitTesting(false)
         }
     }
 }

@@ -117,6 +117,8 @@ struct SmbFolderContent: View {
     @State private var optionsEntry: SmbEntry?
     /// Row of each entry, for the prefetch (a linear search per appearing cell was O(n) in 1000-file folders).
     @State private var positions: [String: Int] = [:]
+    /// Last row the prefetch warmed from (a plain object: writing it must not redraw the folder).
+    @State private var warmMark = WarmMark()
 
     var body: some View {
         content
@@ -195,6 +197,9 @@ struct SmbFolderContent: View {
         // The folder prefill follows where the user is looking.
         ThumbnailService.shared.focus(path: entry.path)
         guard let index = positions[entry.path] ?? entries.firstIndex(of: entry) else { return }
+        // Every cell appearing used to start a 12-thumbnail warm-up; once per 6 rows of scrolling is enough.
+        guard abs(index - warmMark.index) >= 6 else { return }
+        warmMark.index = index
         let upcoming = entries[(index + 1)..<min(entries.count, index + 13)]
             .filter { $0.kind != .other }
             .map { $0.isDirectory ? "smbfolder://\(host)/\($0.path)" : "smb://\(host)/\($0.path)" }
@@ -300,4 +305,8 @@ final class HostFlags: @unchecked Sendable {
     private var hosts: Set<String> = []
     func contains(_ host: String) -> Bool { lock.lock(); defer { lock.unlock() }; return hosts.contains(host.lowercased()) }
     func insert(_ host: String) { lock.lock(); hosts.insert(host.lowercased()); lock.unlock() }
+}
+
+private final class WarmMark {
+    var index = Int.min / 2
 }

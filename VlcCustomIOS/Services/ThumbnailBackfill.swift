@@ -239,17 +239,10 @@ final class ThumbnailBackfill: ObservableObject {
         let entries = items.filter { $0.kind != .other }
         stats[folder] = await service.stats(host: folder.host, entries: entries)
 
+        let missing = await service.missing(host: folder.host, entries: entries)
         var jobs: [(entry: SmbEntry, preview: Bool)] = []
-        if stage != .previews {
-            for entry in entries {
-                if await service.needsThumbnail(source: Self.source(entry, folder.host)) { jobs.append((entry, false)) }
-            }
-        }
-        if stage != .statics {
-            for entry in entries where entry.kind == .video {
-                if await service.needsPreview(source: Self.source(entry, folder.host)) { jobs.append((entry, true)) }
-            }
-        }
+        if stage != .previews { jobs += missing.thumbnails.map { (entries[$0], false) } }
+        if stage != .statics { jobs += missing.previews.map { (entries[$0], true) } }
         PlaybackDiagnostics.append("backfill: \(folder.path) [\(stage)] — \(entries.count) items, \(jobs.count) to make")
         guard !jobs.isEmpty else {
             // After the normal thumbnails, a folder waits for its moving frames (second round).

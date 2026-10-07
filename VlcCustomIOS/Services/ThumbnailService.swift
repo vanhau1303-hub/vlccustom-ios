@@ -682,6 +682,19 @@ actor ThumbnailService {
             && !fm.fileExists(atPath: diskDirectory.appendingPathComponent(key + ".none").path)
     }
 
+    /// Which of `entries` still need a thumbnail / moving frames — one call for a whole folder (the background pass
+    /// asked file by file, two thousand hops through the main thread for a 1000-file folder).
+    func missing(host: String, entries: [SmbEntry]) -> (thumbnails: [Int], previews: [Int]) {
+        var thumbnails: [Int] = []
+        var previews: [Int] = []
+        for (i, entry) in entries.enumerated() {
+            let source = entry.isDirectory ? "smbfolder://\(host)/\(entry.path)" : "smb://\(host)/\(entry.path)"
+            if needsThumbnail(source: source) { thumbnails.append(i) }
+            if entry.kind == .video, needsPreview(source: source) { previews.append(i) }
+        }
+        return (thumbnails, previews)
+    }
+
     /// No moving-thumbnail frames and no marker yet.
     func needsPreview(source: String) -> Bool {
         let key = cacheKey(source)
@@ -834,10 +847,12 @@ final class ThumbnailMemory: @unchecked Sendable {
     let previews = NSCache<NSString, NSArray>()
 
     private init() {
-        // Bounded by bytes, not just count: 300 decoded 480px thumbnails alone could take >100MB, on top of libVLC.
-        images.countLimit = 200
-        images.totalCostLimit = 40 * 1024 * 1024
-        previews.totalCostLimit = 30 * 1024 * 1024
+        // Bounded by bytes, not just count. 40 MB held only ~44 decoded 640px thumbnails — scrolling a grid up and
+        // down kept decoding the same files again; 96 MB holds a couple of screens' worth (emptied on a memory
+        // warning and in the background anyway).
+        images.countLimit = 300
+        images.totalCostLimit = 96 * 1024 * 1024
+        previews.totalCostLimit = 40 * 1024 * 1024
     }
 
     func remember(_ image: UIImage, key: String) {
