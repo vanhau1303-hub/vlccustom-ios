@@ -46,8 +46,8 @@ private struct PlaylistListView: View {
                         Button { opened = playlist } label: {
                             HStack(spacing: 12) {
                                 ZStack {
-                                    RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.12))
-                                    Image(systemName: "list.bullet").foregroundStyle(Color.accentColor)
+                                    RoundedRectangle(cornerRadius: 8).fill(.tint.opacity(0.12))
+                                    Image(systemName: "list.bullet").foregroundStyle(.tint)
                                 }
                                 .frame(width: 44, height: 44)
                                 VStack(alignment: .leading, spacing: 2) {

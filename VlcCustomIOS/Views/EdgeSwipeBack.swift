@@ -40,7 +40,7 @@ private struct EdgeSwipeBack: ViewModifier {
                 if dragX > 8 {
                     Image(systemName: "chevron.backward.circle.fill")
                         .font(.system(size: 34))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(.tint)
                         .opacity(min(1, dragX / 90))
                         .offset(x: min(dragX, 90) * 0.5 - 20)
                         .allowsHitTesting(false)

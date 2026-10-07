@@ -1,20 +1,23 @@
 name: Simulator screenshot
 
-# Builds for the iOS Simulator (no signing needed at all), boots it, installs and launches the app, and screenshots it —
-# so a demo picture can be produced without owning a Mac or an iPhone. Triggered manually or on source changes.
+# Screenshots of the app's screens in the Simulator, against a real (Samba) SMB server with sample videos, pictures
+# and music — so the look can be checked without a device: Mạng (grid with thumbnails), Yêu thích, Cài đặt, the
+# connect screen and the player, in light and dark with different main colors.
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner label (macos-15, macos-15-intel, macos-14)"
+        required: false
+        default: macos-15-intel
   push:
     branches: [main, master]
     paths:
-      - "VlcCustomIOS/**"
-      - "project.yml"
-      - "Podfile"
       - ".github/workflows/simulator-screenshot.yml"
 
 jobs:
   screenshot:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,17 +29,14 @@ jobs:
           sudo xcode-select -s "$LATEST"
           xcodebuild -version
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install tools (XcodeGen, Samba, ffmpeg)
+        run: brew install xcodegen samba ffmpeg
 
       - name: Generate the Xcode project
         run: xcodegen generate
 
       - name: Install CocoaPods dependencies (MobileVLCKit)
         run: pod install --repo-update
-
-      - name: List available simulators (debug)
-        run: xcrun simctl list devices available
 
       - name: Build for the Simulator
         run: |
@@ -50,7 +50,62 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Boot a simulator, install and launch the app, take screenshots
+      - name: Make sample media
+        run: |
+          set -e
+          D=/tmp/smb/media/Phim
+          mkdir -p "$D/Hoạt hình" "$D/Ảnh chụp" "$D/Nhạc"
+          v() { ffmpeg -hide_banner -loglevel error -f lavfi -i "$1" -f lavfi -i sine=frequency=440 -t 40 \
+                  -c:v libx264 -b:v 3M -pix_fmt yuv420p -c:a aac -movflags +faststart "$2"; }
+          v "testsrc2=size=1280x720:rate=25" "$D/Phim hành động 2024.mp4"
+          v "mandelbrot=size=1280x720:rate=25" "$D/Khám phá vũ trụ.mp4"
+          v "smptehdbars=size=1280x720:rate=25" "$D/Bản tin tối.mp4"
+          v "cellauto=size=1280x720:rate=25:rule=110" "$D/Tài liệu thiên nhiên.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "life=size=1280x720:rate=25:mold=10:ratio=0.1" -f lavfi -i sine=frequency=600 \
+            -t 40 -c:v libx265 -b:v 3M -tag:v hvc1 -c:a ac3 "$D/Family Guy S01E01.mkv"
+          v "testsrc=size=1280x720:rate=25" "$D/Hoạt hình/Tập 1.mp4"
+          v "rgbtestsrc=size=1280x720:rate=25" "$D/Hoạt hình/Tập 2.mp4"
+          for i in 1 2 3 4; do
+            ffmpeg -hide_banner -loglevel error -f lavfi -i "mandelbrot=size=1600x1066:start_scale=$i" -frames:v 1 "$D/Ảnh chụp/IMG_00$i.jpg"
+          done
+          cp "$D/Ảnh chụp/IMG_001.jpg" "$D/Ảnh bìa.jpg"
+          ffmpeg -hide_banner -loglevel error -f lavfi -i sine=frequency=330 -t 30 -c:a libmp3lame "$D/Nhạc/Bài hát.mp3"
+          cp "$D/Nhạc/Bài hát.mp3" "$D/Nhạc chờ.mp3"
+          ls -laR /tmp/smb/media
+
+      - name: Start Samba
+        run: |
+          set -e
+          SMBD=$(find "$(brew --prefix samba)/" \( -name samba-dot-org-smbd -o -name smbd \) \( -type f -o -type l \) | head -1)
+          SMBPASSWD=$(find "$(brew --prefix samba)/" -name smbpasswd -type f -perm -u+x | head -1)
+          mkdir -p /tmp/smb/{run,lock,state,cache,private,log}
+          CONF="$(brew --prefix)/etc/smb.conf"
+          mkdir -p "$(dirname "$CONF")"
+          cat > "$CONF" <<EOF
+          [global]
+            server role = standalone server
+            server min protocol = SMB2
+            smb ports = 4450
+            disable netbios = yes
+            passdb backend = tdbsam:/tmp/smb/private/passdb.tdb
+            pid directory = /tmp/smb/run
+            lock directory = /tmp/smb/lock
+            state directory = /tmp/smb/state
+            cache directory = /tmp/smb/cache
+            private dir = /tmp/smb/private
+            ncalrpc dir = /tmp/smb/run/ncalrpc
+            log file = /tmp/smb/log/log.%m
+            log level = 1
+          [media]
+            path = /tmp/smb/media
+            read only = yes
+            valid users = $(whoami)
+          EOF
+          printf 'testpass\ntestpass\n' | sudo "$SMBPASSWD" -c "$CONF" -s -a "$(whoami)"
+          sudo "$SMBD" --daemon --configfile="$CONF"
+          sleep 3
+
+      - name: Screenshots
         run: |
           set -e
           DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c "
@@ -60,35 +115,53 @@ jobs:
               if 'iOS' not in runtime:
                   continue
               for d in devices:
-                  if 'iPhone' in d['name']:
-                      print(d['udid'])
-                      sys.exit(0)
+                  if 'iPhone' in d['name'] and 'Pro' in d['name']:
+                      print(d['udid']); sys.exit(0)
+          for runtime, devices in data['devices'].items():
+              if 'iOS' in runtime:
+                  for d in devices:
+                      if 'iPhone' in d['name']:
+                          print(d['udid']); sys.exit(0)
           sys.exit(1)
           ")
-          echo "Using simulator device $DEVICE_ID"
           xcrun simctl boot "$DEVICE_ID" || true
           xcrun simctl bootstatus "$DEVICE_ID" -b
-
+          xcrun simctl status_bar "$DEVICE_ID" override --time "9:41" --batteryLevel 100 --wifiBars 3 || true
           APP_PATH=$(find build/Build/Products -maxdepth 2 -name "VlcCustomIOS.app" | head -1)
-          echo "App bundle at $APP_PATH"
-          test -n "$APP_PATH"
-
           xcrun simctl install "$DEVICE_ID" "$APP_PATH"
           mkdir -p screenshots
-
-          # Relaunch the app once per tab, telling it which tab to open via the DEMO_TAB env var (ContentView.swift
-          # reads it at startup) — the only practical way to demo every screen without a real device to tap through.
-          declare -a TABS=("0:01_favorites" "1:02_smb" "2:03_settings")
-          for entry in "${TABS[@]}"; do
-            TAB_INDEX="${entry%%:*}"
-            TAB_NAME="${entry##*:}"
+          export SIMCTL_CHILD_DEMO_SMB_HOST="127.0.0.1:4450"
+          export SIMCTL_CHILD_DEMO_SMB_USER="$(whoami)"
+          export SIMCTL_CHILD_DEMO_SMB_PASS="testpass"
+          export SIMCTL_CHILD_DEMO_FAVORITES="1"
+          export SIMCTL_CHILD_DEMO_SMB_FILE="media/Phim/Khám phá vũ trụ.mp4"
+          shot() { # name tab accent appearance wait [browse]
             xcrun simctl terminate "$DEVICE_ID" com.vlccustom.ios >/dev/null 2>&1 || true
-            SIMCTL_CHILD_DEMO_TAB="$TAB_INDEX" xcrun simctl launch "$DEVICE_ID" com.vlccustom.ios
-            sleep 5
-            xcrun simctl io "$DEVICE_ID" screenshot "screenshots/${TAB_NAME}.png"
-          done
+            # DEMO_SMB_BROWSE set (even empty = the list of shares) opens Mạng instead of playing DEMO_SMB_FILE.
+            export SIMCTL_CHILD_DEMO_SMB_BROWSE="$6"
+            SIMCTL_CHILD_DEMO_TAB="$2" SIMCTL_CHILD_DEMO_ACCENT="$3" SIMCTL_CHILD_DEMO_APPEARANCE="$4" \
+              xcrun simctl launch "$DEVICE_ID" com.vlccustom.ios
+            sleep "$5"
+            xcrun simctl io "$DEVICE_ID" screenshot "screenshots/$1.png"
+          }
+          # First run fills the thumbnail cache (and the favorites), the next ones show the finished look.
+          shot 00_warmup 1 "#0A84FF" light 45 "media/Phim"
+          shot 01_mang_light_blue 1 "#0A84FF" light 8 "media/Phim"
+          shot 02_mang_dark_pink 1 "#FF375F" dark 8 "media/Phim"
+          shot 03_favorites_light_violet 0 "#BF5AF2" light 8 "media/Phim"
+          shot 04_favorites_dark_orange 0 "#FF9F0A" dark 8 "media/Phim"
+          shot 05_settings_light_green 2 "#30D158" light 5 "media/Phim"
+          shot 06_settings_dark_indigo 2 "#5E5CE6" dark 5 "media/Phim"
+          shot 07_shares_light 1 "#0A84FF" light 8 ""
+          # Player (DEMO_SMB_FILE without DEMO_SMB_BROWSE plays it), controls still showing.
+          unset SIMCTL_CHILD_DEMO_SMB_BROWSE
+          xcrun simctl terminate "$DEVICE_ID" com.vlccustom.ios >/dev/null 2>&1 || true
+          SIMCTL_CHILD_DEMO_ACCENT="#FF375F" SIMCTL_CHILD_DEMO_APPEARANCE=dark xcrun simctl launch "$DEVICE_ID" com.vlccustom.ios
+          sleep 3
+          xcrun simctl io "$DEVICE_ID" screenshot "screenshots/08_player_pink.png"
 
       - name: Upload screenshots
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: VlcCustomIOS-simulator-screenshots

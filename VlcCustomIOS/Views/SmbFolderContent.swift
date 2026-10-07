@@ -148,10 +148,10 @@ struct SmbFolderContent: View {
             // As big as the screen allows: 2 columns upright, 4 in landscape.
             GeometryReader { geo in
                 let columns = geo.size.width > geo.size.height ? 4 : 2
-                let spacing: CGFloat = 10
-                let cellWidth = max(80, floor((geo.size.width - 24 - spacing * CGFloat(columns - 1)) / CGFloat(columns)))
+                let spacing: CGFloat = 12
+                let cellWidth = max(80, floor((geo.size.width - 32 - spacing * CGFloat(columns - 1)) / CGFloat(columns)))
                 ScrollView {
-                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(cellWidth), spacing: spacing), count: columns), spacing: 14) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(cellWidth), spacing: spacing), count: columns), spacing: 18) {
                         ForEach(entries) { entry in
                             gridCell(entry, width: cellWidth)
                                 .contentShape(Rectangle())
@@ -160,25 +160,33 @@ struct SmbFolderContent: View {
                                 .onLongPressGesture(minimumDuration: 0.4) { showOptions(entry) }
                         }
                     }
-                    .padding(12)
+                    .padding(16)
                 }
             }
         } else {
             List(entries) { entry in
                 HStack(spacing: 12) {
                     SmbEntryThumbnail(entry: entry, host: host, size: librarySettings.thumbnailSize.rowHeight)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(entry.name).lineLimit(2).foregroundStyle(entry.kind == .other ? .secondary : .primary)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.name).font(.subheadline.weight(.medium)).lineLimit(2)
+                            .foregroundStyle(entry.kind == .other ? .secondary : .primary)
                         if showsParentPath {
                             Text((entry.path as NSString).deletingLastPathComponent)
                                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                         }
                         if !entry.isDirectory {
-                            Text(ByteCountFormatter.string(fromByteCount: entry.sizeBytes, countStyle: .file))
-                                .font(.caption).foregroundStyle(.secondary)
+                            HStack(spacing: 6) {
+                                FileBadge(entry: entry, compact: true)
+                                Text(ByteCountFormatter.string(fromByteCount: entry.sizeBytes, countStyle: .file))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
                     Spacer(minLength: 0)
+                    if entry.isDirectory {
+                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
                 }
                 .padding(.vertical, 4)
                 .contentShape(Rectangle())
@@ -216,15 +224,34 @@ struct SmbFolderContent: View {
     private func gridCell(_ entry: SmbEntry, width: CGFloat) -> some View {
         // Every cell is the same 16:9 box so rows line up; folders fill theirs with a big folder symbol.
         let height = width * 9 / 16
-        VStack(alignment: .leading, spacing: 5) {
-            switch entry.kind {
-            case .folder: SmbFolderThumbnailView(host: host, path: entry.path, width: width, height: height)
-            case .video: VideoThumbnailView(source: "smb://\(host)/\(entry.path)", size: height)
-            case .image: SmbImageThumbnailView(host: host, path: entry.path, width: width, height: height)
-            case .audio: AudioCoverView(source: "smb://\(host)/\(entry.path)", size: height, width: width)
-            case .other: SmbEntryThumbnail(entry: entry, host: host, size: height).frame(width: width)
+        VStack(alignment: .leading, spacing: 7) {
+            Group {
+                switch entry.kind {
+                case .folder: SmbFolderThumbnailView(host: host, path: entry.path, width: width, height: height)
+                case .video: VideoThumbnailView(source: "smb://\(host)/\(entry.path)", size: height)
+                case .image: SmbImageThumbnailView(host: host, path: entry.path, width: width, height: height)
+                case .audio: AudioCoverView(source: "smb://\(host)/\(entry.path)", size: height, width: width)
+                case .other: SmbEntryThumbnail(entry: entry, host: host, size: height).frame(width: width)
+                }
             }
-            Text(entry.name).font(.footnote).lineLimit(2).multilineTextAlignment(.leading)
+            // Type and size on the picture, a soft shadow under it: cards instead of bare boxes.
+            .overlay(alignment: .bottomTrailing) {
+                if !entry.isDirectory, entry.kind != .other {
+                    HStack(spacing: 4) {
+                        FileBadge(entry: entry)
+                        Text(ByteCountFormatter.string(fromByteCount: entry.sizeBytes, countStyle: .file))
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7).padding(.vertical, 4)
+                    .background(Capsule().fill(.black.opacity(0.55)))
+                    .padding(6)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 4)
+            Text(entry.name).font(.footnote.weight(.medium)).lineLimit(2).multilineTextAlignment(.leading)
+                .padding(.horizontal, 2)
         }
         .frame(width: width, alignment: .leading)
     }
@@ -309,4 +336,25 @@ final class HostFlags: @unchecked Sendable {
 
 private final class WarmMark {
     var index = Int.min / 2
+}
+
+/// The file's type as a small label ("MKV", "MP4", "JPG"...), on thumbnails and in list rows.
+struct FileBadge: View {
+    let entry: SmbEntry
+    var compact = false
+
+    var body: some View {
+        let ext = (entry.name as NSString).pathExtension.uppercased()
+        if !ext.isEmpty {
+            if compact {
+                Text(ext)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tint)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(.tint.opacity(0.14)))
+            } else {
+                Text(ext).fontWeight(.bold)
+            }
+        }
+    }
 }

@@ -5,6 +5,7 @@ struct ContentView: View {
     /// Lets CI's demo-screenshot workflow launch straight into a given tab (via the `DEMO_TAB` environment
     /// variable) so every screen can be screenshotted without a real device to tap through them by hand.
     @ObservedObject private var navigator = AppNavigator.shared
+    @ObservedObject private var theme = AppTheme.shared
     @State private var demoPlaying = false
 
     var body: some View {
@@ -12,12 +13,16 @@ struct ContentView: View {
             // Only the three screens used day to day stay in the tab bar; the Video/Nhạc/Ảnh/Playlist libraries
             // live inside Cài đặt → Thư viện.
             FavoritesView()
-                .tabItem { Label("Yêu thích", systemImage: "star") }.tag(0)
+                .tabItem { Label("Yêu thích", systemImage: "star.fill") }.tag(0)
             SmbBrowserView()
-                .tabItem { Label("Mạng", systemImage: "network") }.tag(1)
+                .tabItem { Label("Mạng", systemImage: "externaldrive.connected.to.line.below.fill") }.tag(1)
             SettingsView()
-                .tabItem { Label("Cài đặt", systemImage: "gearshape") }.tag(2)
+                .tabItem { Label("Cài đặt", systemImage: "gearshape.fill") }.tag(2)
         }
+        // The main color and light / dark (Cài đặt → Giao diện).
+        .tint(theme.accent)
+        .preferredColorScheme(theme.colorScheme)
+        .onAppear { theme.applyToWindows() }
         // Scrolling a list closes the keyboard too.
         .scrollDismissesKeyboard(.immediately)
         .onAppear { DispatchQueue.main.async { KeyboardDismisser.shared.install() } }
@@ -43,6 +48,19 @@ struct ContentView: View {
     /// play a real video from a real (Samba) SMB server and collect the diagnostics log, with nobody tapping.
     private func startDemoSmbPlayback() async {
         let env = ProcessInfo.processInfo.environment
+        // CI screenshots: open a folder in Mạng (DEMO_SMB_BROWSE = "share/path"), optionally starring it and a file.
+        if let host = env["DEMO_SMB_HOST"], let folder = env["DEMO_SMB_BROWSE"] {
+            await SmbRegistry.shared.registerUnchecked(host: host, username: env["DEMO_SMB_USER"] ?? "",
+                                                       password: env["DEMO_SMB_PASS"] ?? "", domain: "")
+            if env["DEMO_FAVORITES"] == "1", !FavoritesStore.isFavorite(host: host, path: folder) {
+                FavoritesStore.toggle(host: host, path: folder, title: (folder as NSString).lastPathComponent)
+                if let file = env["DEMO_SMB_FILE"] {
+                    FavoritesStore.toggle(host: host, path: file, title: (file as NSString).lastPathComponent, isFile: true)
+                }
+            }
+            if Self.demoTab() == 1 { navigator.openSmbFolder(host: host, path: folder) }
+            return
+        }
         guard let host = env["DEMO_SMB_HOST"], let file = env["DEMO_SMB_FILE"] else { return }
         await SmbRegistry.shared.registerUnchecked(host: host, username: env["DEMO_SMB_USER"] ?? "",
                                                    password: env["DEMO_SMB_PASS"] ?? "", domain: "")
@@ -96,10 +114,18 @@ private enum LibraryScreen: String, Identifiable, CaseIterable {
     }
     var icon: String {
         switch self {
-        case .video: "film"
+        case .video: "film.fill"
         case .music: "music.note"
-        case .images: "photo.on.rectangle"
+        case .images: "photo.fill.on.rectangle.fill"
         case .playlists: "list.bullet"
+        }
+    }
+    var color: Color {
+        switch self {
+        case .video: .blue
+        case .music: .pink
+        case .images: .orange
+        case .playlists: .purple
         }
     }
 }
@@ -115,23 +141,21 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                ThemeSettingsSection()
                 Section("Thư viện") {
                     ForEach(LibraryScreen.allCases) { screen in
                         Button { library = screen } label: {
-                            Label(screen.title, systemImage: screen.icon)
+                            HStack {
+                                IconLabel(screen.title, systemName: screen.icon, color: screen.color)
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                            }
                         }
                     }
                 }
                 Section {
-                    Text("Video (trên máy + SMB), Nhạc (phát nền, điều khiển ở màn hình khóa), Ảnh (xem có zoom, trình chiếu), " +
-                         "Playlist, Yêu thích (thư mục SMB), thumbnail cho video/ảnh, tìm kiếm & sắp xếp, và trong trình phát: " +
-                         "tốc độ phát, chọn track âm thanh/phụ đề, chỉnh màu, khử sọc, tỉ lệ khung hình, phụ đề AI (nhận dạng " +
-                         "giọng nói ngay trên máy) và dịch tự động sang ngôn ngữ khác.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
-                Section {
                     Toggle(isOn: $fastThumbnails) {
-                        Label("Ưu tiên tạo thumbnail nhanh", systemImage: "hare")
+                        IconLabel("Ưu tiên tạo thumbnail nhanh", systemName: "hare.fill", color: .orange)
                     }
                     .onChange(of: fastThumbnails) { on in
                         ThumbnailPolicy.shared.fastEnabled = on
@@ -142,7 +166,7 @@ struct SettingsView: View {
                 }
                 Section {
                     Toggle(isOn: $backfillThumbnails) {
-                        Label("Tạo thumbnail nền cho thư mục đã xem", systemImage: "square.stack.3d.down.right")
+                        IconLabel("Tạo thumbnail nền", systemName: "square.stack.3d.down.right.fill", color: .indigo)
                     }
                     .onChange(of: backfillThumbnails) { on in backfill.setEnabled(on) }
                     if backfillThumbnails {
@@ -152,7 +176,7 @@ struct SettingsView: View {
                         ThumbnailBackfillFoldersView()
                     } label: {
                         HStack {
-                            Label("Thư mục đã xem", systemImage: "folder.badge.gearshape")
+                            IconLabel("Thư mục đã xem", systemName: "folder.fill", color: .blue)
                             Spacer()
                             Text("\(backfill.visitedCount)").foregroundStyle(.secondary)
                         }
@@ -164,14 +188,14 @@ struct SettingsView: View {
                 }
                 Section {
                     Toggle(isOn: $animatedThumbnails) {
-                        Label("Thumbnail động", systemImage: "play.rectangle.on.rectangle")
+                        IconLabel("Thumbnail động", systemName: "play.rectangle.on.rectangle.fill", color: .pink)
                     }
                 } footer: {
                     Text("Video trong thư mục SMB lần lượt hiện 6 cảnh (10% → 85% thời lượng). Các cảnh được Thumbnail nền tạo sẵn (kể cả khi tắt mục này), nên bật lên là có ngay; khoảng 150KB mỗi video.")
                 }
                 Section {
                     HStack {
-                        Label("Thumbnail đã lưu", systemImage: "photo.stack")
+                        IconLabel("Thumbnail đã lưu", systemName: "photo.stack.fill", color: .teal)
                         Spacer()
                         Text(ByteCountFormatter.string(fromByteCount: thumbnailBytes, countStyle: .file)).foregroundStyle(.secondary)
                     }
@@ -184,13 +208,9 @@ struct SettingsView: View {
                 } footer: {
                     Text("Thumbnail được lưu trong bộ nhớ của ứng dụng, mở lại thư mục là hiện ngay, không phải tạo lại qua mạng.")
                 }
-                Section("Chưa có (dự kiến làm dần)") {
-                    Text("Khoá ứng dụng.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
                 Section {
                     HStack {
-                        Text("Phiên bản")
+                        IconLabel("Phiên bản", systemName: "info", color: .gray)
                         Spacer()
                         Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")
                             .foregroundStyle(.secondary)
@@ -198,14 +218,14 @@ struct SettingsView: View {
                 }
                 Section {
                     ShareLink(item: DiagnosticsLogFile(), preview: SharePreview("vlc_diagnostics.log")) {
-                        Label("Chia sẻ log chẩn đoán", systemImage: "square.and.arrow.up")
+                        IconLabel("Chia sẻ log chẩn đoán", systemName: "square.and.arrow.up", color: .green)
                     }
                     Button("Xoá log", role: .destructive) { PlaybackDiagnostics.clear() }
                 } footer: {
                     Text("Nếu video không phát được, hãy thử phát lại (để lỗi ghi vào log) rồi chia sẻ log này để chẩn đoán đúng nguyên nhân.")
                 }
             }
-            .navigationTitle("VLCcustom cho iOS")
+            .navigationTitle("Cài đặt")
             .task { thumbnailBytes = ThumbnailService.diskUsage() }
             .sheet(item: $library) { screen in
                 Group {
@@ -217,6 +237,7 @@ struct SettingsView: View {
                     }
                 }
                 .musicPlayerHost()
+                .tint(AppTheme.shared.accent)
             }
         }
     }

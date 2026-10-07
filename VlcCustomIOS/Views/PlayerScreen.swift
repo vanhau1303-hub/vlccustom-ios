@@ -184,6 +184,7 @@ struct PlayerScreen: View {
             }
         }
         .statusBarHidden()
+        .tint(AppTheme.shared.accent)
         .fadeInOnAppear()
         .onAppear {
             MusicUI.shared.videoOpened()
@@ -889,7 +890,7 @@ struct PictureControlsSheet: View {
 /// finger lifts). A 36pt-tall touch area around a thin track, so it is easy to hit.
 struct SeekBar: View {
     let progress: Double
-    var tint: Color = .white
+    var tint: AnyShapeStyle = AnyShapeStyle(Color.white)
     var track: Color = .white.opacity(0.3)
     let onScrub: (Double) -> Void
     let onCommit: (Double) -> Void
@@ -944,14 +945,14 @@ struct PlayQueueSheet: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(item.name).lineLimit(2)
                                     .fontWeight(index == queue.index ? .semibold : .regular)
-                                    .foregroundStyle(index == queue.index ? Color.accentColor : .primary)
+                                    .foregroundStyle(index == queue.index ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                                 if item.sizeBytes > 0 {
                                     Text(item.sizeLabel).font(.caption).foregroundStyle(.secondary)
                                 }
                             }
                             Spacer(minLength: 0)
                             if index == queue.index {
-                                Image(systemName: "speaker.wave.2.fill").foregroundStyle(Color.accentColor)
+                                Image(systemName: "speaker.wave.2.fill").foregroundStyle(.tint)
                             }
                         }
                     }
@@ -985,7 +986,7 @@ private struct PlayerTimeRow: View {
     var body: some View {
         Text(Self.format(scrub.seeking ? Int32(scrub.value * Double(clock.duration)) : clock.time))
             .foregroundStyle(.white).font(.caption).monospacedDigit()
-        SeekBar(progress: scrub.seeking ? scrub.value : clock.progress, onScrub: onScrub, onCommit: onCommit)
+        SeekBar(progress: scrub.seeking ? scrub.value : clock.progress, tint: AnyShapeStyle(.tint), onScrub: onScrub, onCommit: onCommit)
             .overlay { SubtitleMarksBar(live: live).offset(y: 7).allowsHitTesting(false) }
         Text(Self.format(clock.duration)).foregroundStyle(.white).font(.caption).monospacedDigit()
     }
@@ -1054,7 +1055,7 @@ private struct ResumeBanner: View {
                 Label("Xem tiếp từ \(timeText)", systemImage: "play.fill")
                     .font(.subheadline.weight(.semibold))
                     .padding(.horizontal, 14).padding(.vertical, 10)
-                    .background(Capsule().fill(Color.accentColor))
+                    .background(Capsule().fill(.tint))
                     .foregroundStyle(.white)
             }
             Button(action: onDismiss) {

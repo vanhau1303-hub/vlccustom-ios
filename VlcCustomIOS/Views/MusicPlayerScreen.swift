@@ -101,7 +101,7 @@ struct MusicPlayerScreen: View {
                 VStack(spacing: 4) {
                     // Tap anywhere on the bar to jump there, or drag to scrub.
                     SeekBar(progress: seeking ? sliderValue : player.progress,
-                            tint: .accentColor, track: Color.secondary.opacity(0.3),
+                            tint: AnyShapeStyle(.tint), track: Color.secondary.opacity(0.3),
                             onScrub: { fraction in
                                 seeking = true
                                 sliderValue = fraction
@@ -121,7 +121,7 @@ struct MusicPlayerScreen: View {
 
                 HStack(spacing: 36) {
                     Button { queue.shuffle.toggle() } label: { Image(systemName: "shuffle") }
-                        .foregroundStyle(queue.shuffle ? Color.accentColor : .primary)
+                        .foregroundStyle(queue.shuffle ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                     Button { player.playPrevious() } label: { Image(systemName: "backward.end.fill").font(.title2) }
                         .disabled(!queue.hasPrevious)
                     Button { player.togglePlayPause() } label: {
@@ -130,7 +130,7 @@ struct MusicPlayerScreen: View {
                     Button { player.playNext() } label: { Image(systemName: "forward.end.fill").font(.title2) }
                         .disabled(!queue.hasNext)
                     Button { cycleRepeat() } label: { Image(systemName: repeatIcon) }
-                        .foregroundStyle(queue.repeatMode == .off ? .primary : Color.accentColor)
+                        .foregroundStyle(queue.repeatMode == .off ? AnyShapeStyle(.primary) : AnyShapeStyle(.tint))
                 }
                 Spacer()
             }

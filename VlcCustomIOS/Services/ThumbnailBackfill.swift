@@ -435,7 +435,7 @@ struct ThumbnailBackfillFoldersView: View {
                         } label: {
                             Image(systemName: included ? "checkmark.circle.fill" : "circle")
                                 .font(.title3)
-                                .foregroundStyle(included ? Color.accentColor : Color.secondary)
+                                .foregroundStyle(included ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                         }
                         .buttonStyle(.borderless)
                         VStack(alignment: .leading, spacing: 2) {
@@ -444,7 +444,7 @@ struct ThumbnailBackfillFoldersView: View {
                                 Text(folder.name).lineLimit(1).truncationMode(.middle)
                                 if backfill.browsing == folder {
                                     Text("đang xem").font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
-                                        .background(Color.accentColor.opacity(0.2), in: Capsule())
+                                        .background(.tint.opacity(0.2), in: Capsule())
                                 }
                             }
                             Text("\(folder.host)/\(folder.path)").font(.caption2).foregroundStyle(.secondary)

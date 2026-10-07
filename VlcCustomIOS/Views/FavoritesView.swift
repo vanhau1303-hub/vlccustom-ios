@@ -17,13 +17,25 @@ struct FavoritesView: View {
                         message: "Trong tab Mạng: bấm ngôi sao để lưu thư mục đang mở, hoặc nhấn giữ một file/thư mục → Thêm vào Yêu thích."
                     )
                 } else {
-                    List {
-                        ForEach(favorites) { favorite in
-                            Button { open(favorite) } label: { row(favorite) }
+                    GeometryReader { geo in
+                        let columns = geo.size.width > geo.size.height ? 4 : 2
+                        let spacing: CGFloat = 12
+                        let width = max(80, floor((geo.size.width - 32 - spacing * CGFloat(columns - 1)) / CGFloat(columns)))
+                        ScrollView {
+                            LazyVGrid(columns: Array(repeating: GridItem(.fixed(width), spacing: spacing), count: columns), spacing: 18) {
+                                ForEach(favorites) { favorite in
+                                    Button { open(favorite) } label: { card(favorite, width: width) }
+                                        .buttonStyle(.plain)
+                                        .contextMenu {
+                                            Button(role: .destructive) { remove(favorite) } label: {
+                                                Label("Bỏ khỏi Yêu thích", systemImage: "star.slash")
+                                            }
+                                        }
+                                }
+                            }
+                            .padding(16)
                         }
-                        .onDelete(perform: delete)
                     }
-                    .listStyle(.plain)
                 }
             }
             .navigationTitle("Yêu thích")
@@ -38,18 +50,41 @@ struct FavoritesView: View {
         }
     }
 
-    private func row(_ favorite: FavoriteFolder) -> some View {
-        HStack(spacing: 12) {
-            SmbEntryThumbnail(entry: entry(for: favorite), host: favorite.host, size: 54)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(favorite.title).lineLimit(2)
-                Text("\(favorite.host)/\(favorite.path)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+    /// A card: the folder's mosaic / the file's thumbnail, a kind badge, the name and where it is.
+    private func card(_ favorite: FavoriteFolder, width: CGFloat) -> some View {
+        let height = width * 9 / 16
+        let item = entry(for: favorite)
+        return VStack(alignment: .leading, spacing: 6) {
+            Group {
+                switch item.kind {
+                case .folder: SmbFolderThumbnailView(host: favorite.host, path: favorite.path, width: width, height: height)
+                case .video: VideoThumbnailView(source: "smb://\(favorite.host)/\(favorite.path)", size: height)
+                case .image: SmbImageThumbnailView(host: favorite.host, path: favorite.path, width: width, height: height)
+                case .audio: AudioCoverView(source: "smb://\(favorite.host)/\(favorite.path)", size: height, width: width)
+                case .other: SmbEntryThumbnail(entry: item, host: favorite.host, size: height).frame(width: width)
+                }
             }
-            Spacer(minLength: 0)
-            Image(systemName: favorite.isFileShortcut ? "play.circle" : "arrow.turn.up.right")
-                .foregroundStyle(.secondary)
+            .overlay(alignment: .topLeading) {
+                Image(systemName: favorite.isFileShortcut ? "play.fill" : "folder.fill")
+                    .font(.caption.weight(.bold)).foregroundStyle(.white)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(.tint))
+                    .padding(6)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 4)
+            Text(favorite.title).font(.footnote.weight(.semibold)).lineLimit(2).foregroundStyle(.primary)
+                .padding(.horizontal, 2)
+            Text("\(favorite.host)/\((favorite.path as NSString).deletingLastPathComponent)")
+                .font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                .padding(.horizontal, 2)
         }
-        .padding(.vertical, 4)
+        .frame(width: width, alignment: .leading)
+    }
+
+    private func remove(_ favorite: FavoriteFolder) {
+        FavoritesStore.remove(favorite.id)
+        withAnimation { favorites = FavoritesStore.load() }
     }
 
     private func entry(for favorite: FavoriteFolder) -> SmbEntry {
@@ -70,10 +105,6 @@ struct FavoritesView: View {
         }
     }
 
-    private func delete(_ offsets: IndexSet) {
-        for index in offsets { FavoritesStore.remove(favorites[index].id) }
-        favorites = FavoritesStore.load()
-    }
 }
 
 /// Cross-tab navigation: which tab is showing, and a pending "open this SMB folder" request for the Mạng tab.

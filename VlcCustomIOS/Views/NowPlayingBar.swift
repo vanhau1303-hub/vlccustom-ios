@@ -51,7 +51,7 @@ struct NowPlayingBar: View {
                 Text(format(seeking ? Int32(seekValue * Double(player.duration)) : player.time))
                     .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
                 SeekBar(progress: seeking ? seekValue : player.progress,
-                        tint: .accentColor, track: Color.secondary.opacity(0.3),
+                        tint: AnyShapeStyle(.tint), track: Color.secondary.opacity(0.3),
                         onScrub: { fraction in
                             seeking = true
                             seekValue = fraction

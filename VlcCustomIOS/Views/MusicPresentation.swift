@@ -76,6 +76,7 @@ private struct MusicPlayerHost: ViewModifier {
                 set: { if !$0 { ui.collapse() } }
             )) {
                 MusicPlayerScreen(onClose: { ui.collapse() })
+                    .tint(AppTheme.shared.accent)
             }
             .onAppear { ui.register(id) }
             .onDisappear { ui.unregister(id) }

@@ -46,19 +46,25 @@ struct SmbBrowserView: View {
                     HStack(spacing: 8) {
                         // Back = up one folder; only from the list of shares does it leave the server.
                         Button { path.isEmpty ? disconnect() : goUp() } label: {
-                            Image(systemName: "chevron.backward").font(.body.weight(.semibold)).frame(width: 36, height: 36)
+                            Image(systemName: "chevron.backward").font(.body.weight(.semibold))
+                                .frame(width: 36, height: 36)
+                                .background(Circle().fill(.tint.opacity(0.14)))
                         }
                         breadcrumbs
                         if !path.isEmpty {
+                            let starred = FavoritesStore.isFavorite(host: host, path: path)
                             Button {
                                 FavoritesStore.toggle(host: host, path: path, title: (path as NSString).lastPathComponent)
                             } label: {
-                                Image(systemName: FavoritesStore.isFavorite(host: host, path: path) ? "star.fill" : "star")
+                                Image(systemName: starred ? "star.fill" : "star")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(starred ? AnyShapeStyle(Color.yellow) : AnyShapeStyle(.tint))
                                     .frame(width: 36, height: 36)
+                                    .background(Circle().fill(.tint.opacity(0.14)))
                             }
                         }
                     }
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 12)
                 }
                 list
             }
@@ -141,7 +147,7 @@ struct SmbBrowserView: View {
         return ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
-                    crumb(host, target: "", isLast: parts.isEmpty).id(0)
+                    crumb(host, target: "", isLast: parts.isEmpty, icon: "server.rack").id(0)
                     ForEach(parts.indices, id: \.self) { i in
                         Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
                         crumb(parts[i], target: parts[0...i].joined(separator: "/"), isLast: i == parts.count - 1).id(i + 1)
@@ -155,58 +161,107 @@ struct SmbBrowserView: View {
         }
     }
 
-    private func crumb(_ title: String, target: String, isLast: Bool) -> some View {
+    private func crumb(_ title: String, target: String, isLast: Bool, icon: String? = nil) -> some View {
         Button {
             guard !isLast else { return }
             cancelDeepSearch()
             path = target
             Task { await load() }
         } label: {
-            Text(title)
-                .font(.footnote.weight(isLast ? .semibold : .regular))
-                .foregroundStyle(isLast ? Color.primary : Color.accentColor)
-                .lineLimit(1)
-                .padding(.horizontal, 8).padding(.vertical, 5)
-                .background(Capsule().fill(isLast ? Color.secondary.opacity(0.15) : Color.accentColor.opacity(0.1)))
+            HStack(spacing: 4) {
+                if let icon { Image(systemName: icon).font(.caption2) }
+                Text(title).lineLimit(1)
+            }
+            .font(.footnote.weight(isLast ? .semibold : .medium))
+            .foregroundStyle(isLast ? AnyShapeStyle(Color.white) : AnyShapeStyle(.tint))
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(Capsule().fill(isLast ? AnyShapeStyle(.tint) : AnyShapeStyle(.tint.opacity(0.14))))
         }
         .buttonStyle(.plain)
     }
 
     private var connectForm: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            TextField("Máy chủ (IP hoặc tên)", text: $host).textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
-            HStack {
-                TextField("Tài khoản", text: $username).textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
-                SecureField("Mật khẩu", text: $password).textFieldStyle(.roundedBorder)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: "externaldrive.connected.to.line.below.fill")
+                    .font(.title2).foregroundStyle(.white)
+                    .frame(width: 48, height: 48)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.tint))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Kết nối máy chủ").font(.headline)
+                    Text("Thư mục chia sẻ SMB trong mạng nhà").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { showScan = true } label: {
+                    Label("Tìm", systemImage: "antenna.radiowaves.left.and.right")
+                }
+                .buttonStyle(.bordered)
             }
-            HStack {
-                TextField("Domain (tuỳ chọn)", text: $domain).textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
-                Button { showScan = true } label: { Image(systemName: "network") }
-                    .buttonStyle(.bordered)
-                Button(connecting ? "Đang kết nối…" : "Kết nối") { connect() }
-                    .disabled(connecting || host.isEmpty)
-                    .buttonStyle(.borderedProminent)
+            field("Máy chủ (IP hoặc tên)", text: $host, icon: "server.rack")
+            HStack(spacing: 8) {
+                field("Tài khoản", text: $username, icon: "person.fill")
+                field("Mật khẩu", text: $password, icon: "lock.fill", secure: true)
             }
+            field("Domain (tuỳ chọn)", text: $domain, icon: "building.2.fill")
+            Button { connect() } label: {
+                HStack {
+                    if connecting { ProgressView().tint(.white) }
+                    Text(connecting ? "Đang kết nối…" : "Kết nối").fontWeight(.semibold)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(connecting || host.isEmpty)
         }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+        .padding(.top, 8)
         .sheet(isPresented: $showScan) {
             NetworkScanSheet(onSelect: { ip in host = ip })
         }
     }
 
-    private var savedServersRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack {
-                ForEach(savedProfiles) { profile in
-                    Button(profile.host) {
-                        host = profile.host
-                        username = profile.username
-                        domain = profile.domain
-                        password = SmbServerStore.password(for: profile.host)
-                    }
-                    .buttonStyle(.bordered)
+    private func field(_ title: String, text: Binding<String>, icon: String, secure: Bool = false) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).font(.footnote).foregroundStyle(.secondary).frame(width: 18)
+            Group {
+                if secure {
+                    SecureField(title, text: text)
+                } else {
+                    TextField(title, text: text).autocorrectionDisabled().textInputAutocapitalization(.never)
                 }
             }
         }
+        .padding(.horizontal, 12).padding(.vertical, 11)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(.tertiarySystemGroupedBackground)))
+    }
+
+    private var savedServersRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Máy chủ đã lưu").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(savedProfiles) { profile in
+                        Button {
+                            host = profile.host
+                            username = profile.username
+                            domain = profile.domain
+                            password = SmbServerStore.password(for: profile.host)
+                            connect()
+                        } label: {
+                            Label(profile.host, systemImage: "server.rack")
+                                .font(.subheadline.weight(.medium))
+                                .padding(.horizontal, 14).padding(.vertical, 9)
+                                .background(Capsule().fill(.tint.opacity(0.14)))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tint)
+                    }
+                }
+            }
+        }
+        .padding(.top, 4)
     }
 
     @ViewBuilder
