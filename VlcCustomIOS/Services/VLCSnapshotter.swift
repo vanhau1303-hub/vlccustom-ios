@@ -207,7 +207,7 @@ final class VLCSnapshotter: @unchecked Sendable {
         probe.close()
 
         // 2) One fresh player per spot, opened right there.
-        let reserve: TimeInterval = 6
+        let reserve: TimeInterval = 9
         for position in positions {
             let spotDeadline = min(deadline.addingTimeInterval(-reserve), Date().addingTimeInterval(spotTimeout))
             if cancelled() || Date() >= spotDeadline { break }
@@ -216,7 +216,9 @@ final class VLCSnapshotter: @unchecked Sendable {
                                         maxWidth: maxWidth, minFrames: 2) else { continue }
             let image = session.frame(until: spotDeadline, cancelled: cancelled)
             session.close()
-            guard let image else { continue }
+            // No frame at all (not a dark one): this file does not open at a spot in time, and the other spots will
+            // not either — go to the fallback with the time left.
+            guard let image else { break }
             if firstUsable {
                 if consider(image) { break }
             } else {
