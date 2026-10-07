@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 /// Makes the missing thumbnails — and the moving-thumbnail frames, whether or not they are shown — of the SMB folders
 /// already opened, in the background, one at a time. Rules:
@@ -246,14 +247,14 @@ final class ThumbnailBackfill: ObservableObject {
     private func make(_ entry: SmbEntry, preview: Bool, host: String, source: String) async {
         let service = ThumbnailService.shared
         if preview {
-            _ = await service.smbPreview(source: source, host: host, path: entry.path)
+            _ = await service.smbPreview(source: source, host: host, path: entry.path, screen: false)
             return
         }
         switch entry.kind {
-        case .video: _ = await service.smbVideoThumbnail(source: source, host: host, path: entry.path)
-        case .image: _ = await service.smbImageThumbnail(source: source, host: host, path: entry.path)
-        case .audio: _ = await service.audioCover(source: source)
-        case .folder: _ = await service.folderThumbnail(host: host, path: entry.path)
+        case .video: _ = await service.smbVideoThumbnail(source: source, host: host, path: entry.path, screen: false)
+        case .image: _ = await service.smbImageThumbnail(source: source, host: host, path: entry.path, screen: false)
+        case .audio: _ = await service.audioCover(source: source, screen: false)
+        case .folder: _ = await service.folderThumbnail(host: host, path: entry.path, screen: false)
         case .other: break
         }
     }
@@ -405,5 +406,48 @@ struct ThumbnailBackfillFoldersView: View {
         case nil:
             Text("—").font(.caption).foregroundStyle(.secondary)
         }
+    }
+}
+
+/// "Buộc lấy thumbnail": runs in the background (the options sheet closes at once) — the agreed spots past black
+/// frames, longer limits, normal then compatibility route, saved with its moving frames. Waits while a video is open
+/// and goes again if one opened half-way. The cell shows a spinner meanwhile, and a warning badge if it failed.
+@MainActor
+final class ForcedThumbnails: ObservableObject {
+    static let shared = ForcedThumbnails()
+    @Published private(set) var running: Set<String> = []
+    @Published private(set) var failed: Set<String> = []
+    private var queue: [(source: String, host: String, path: String)] = []
+    private var worker: Task<Void, Never>?
+
+    func force(host: String, path: String) {
+        let source = "smb://\(host)/\(path)"
+        guard !running.contains(source) else { return }
+        running.insert(source)
+        failed.remove(source)
+        queue.append((source, host, path))
+        if worker == nil {
+            worker = Task { [weak self] in await self?.work() }
+        }
+    }
+
+    private func work() async {
+        while !queue.isEmpty {
+            let job = queue.removeFirst()
+            var image: UIImage?
+            for _ in 0..<5 {
+                while PlaybackActivity.shared.isBusy { try? await Task.sleep(nanoseconds: 1_000_000_000) }
+                image = await ThumbnailService.shared.forceVideoThumbnail(source: job.source, host: job.host, path: job.path) { _ in }
+                // Given up only because a video was opened meanwhile: try again once it is closed.
+                if image != nil || !PlaybackActivity.shared.isBusy { break }
+            }
+            running.remove(job.source)
+            if image == nil {
+                failed.insert(job.source)
+                PlaybackDiagnostics.append("thumb: forced \(job.path) — no frame on either route")
+            }
+            ThumbnailEvents.shared.changed()
+        }
+        worker = nil
     }
 }

@@ -13,6 +13,7 @@ struct VideoThumbnailView: View {
     @ObservedObject private var activity = PlaybackActivity.shared
     @ObservedObject private var events = ThumbnailEvents.shared
     @AppStorage(ThumbnailPolicy.animatedKey) private var animated = false
+    @ObservedObject private var forced = ForcedThumbnails.shared
 
     var body: some View {
         ZStack {
@@ -29,6 +30,16 @@ struct VideoThumbnailView: View {
         }
         .frame(width: size * 16 / 9, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(alignment: .topTrailing) {
+            // "Buộc lấy thumbnail" running in the background for this video / failed.
+            if forced.running.contains(source) {
+                ProgressView().controlSize(.small).padding(4)
+                    .background(.ultraThinMaterial, in: Circle()).padding(4)
+            } else if forced.failed.contains(source) {
+                Image(systemName: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                    .padding(4).background(.ultraThinMaterial, in: Circle()).padding(4)
+            }
+        }
         // Thumbnail động: only while the cell is on screen (the task stops when it scrolls away), and only once its
         // normal thumbnail exists — the frames are made after it, never while a video is open.
         .task(id: "\(source)#\(events.version)#\(animated)#\(image != nil)") {

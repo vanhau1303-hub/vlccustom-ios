@@ -95,13 +95,12 @@ struct SmbEntryOptionsSheet: View {
 
                 if entry.kind == .video {
                     Section {
-                        NavigationLink {
-                            ForceThumbnailView(host: host, path: entry.path, name: entry.name)
-                        } label: {
-                            Label("Buộc lấy thumbnail…", systemImage: "camera.viewfinder")
+                        action("Buộc lấy thumbnail (chạy nền)", icon: "camera.viewfinder") {
+                            ForcedThumbnails.shared.force(host: host, path: entry.path)
+                            dismiss()
                         }
                     } footer: {
-                        Text("Cho video không tự lấy được thumbnail: tự thử lại kỹ hơn (nhiều mốc, hai cách đọc file, chờ lâu hơn) và lưu luôn.")
+                        Text("Cho video không tự lấy được thumbnail: chạy nền, thử kỹ hơn (các mốc 25/40/60/15/75%, bỏ khung đen, hai cách đọc file, chờ lâu hơn) rồi tự lưu kèm thumbnail động. Ô video hiện vòng xoay trong lúc lấy.")
                     }
                 }
 

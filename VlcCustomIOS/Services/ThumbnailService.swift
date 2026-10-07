@@ -104,14 +104,14 @@ actor ThumbnailService {
 
     /// Thumbnail for an SMB video, taken by libVLC itself (`VLCSnapshotter`) over its own SMB2 module — works
     /// for every format VLC plays (MKV, AVI, HEVC...). One at a time: each is its own SMB session plus a decoder.
-    private func makeSmbVideoThumbnail(source: String, host: String, path: String) async -> UIImage? {
+    private func makeSmbVideoThumbnail(source: String, host: String, path: String, screen: Bool) async -> UIImage? {
         if let cached = cachedThumbnail(source: source) { return cached }
         let key = cacheKey(source)
         let noFrame = diskDirectory.appendingPathComponent(key + ".none")
         // A file libVLC could not take a frame from is not retried on every visit (the log showed the same file
         // re-attempted over and over, each time another SMB session hammering the server).
         if FileManager.default.fileExists(atPath: noFrame.path) { return nil }
-        await acquireSmbSlot()
+        await acquireSmbSlot(source: source, screen: screen)
         defer { releaseSmbSlot() }
         if Task.isCancelled { return nil }
         let busy = await Self.videoIsPlaying()
@@ -147,9 +147,9 @@ actor ThumbnailService {
 
     /// Thumbnail for a picture on an SMB share (bytes via `SmbImageLoader`, downsampled without decoding the full
     /// picture).
-    private func makeSmbImageThumbnail(source: String, host: String, path: String) async -> UIImage? {
+    private func makeSmbImageThumbnail(source: String, host: String, path: String, screen: Bool) async -> UIImage? {
         if let cached = cachedThumbnail(source: source) { return cached }
-        await acquireSmbSlot()
+        await acquireSmbSlot(source: source, screen: screen)
         defer { releaseSmbSlot() }
         if Task.isCancelled { return nil }
         if let cached = cachedThumbnail(source: source) { return cached }
@@ -159,13 +159,13 @@ actor ThumbnailService {
 
     /// Cover art embedded in a song (ID3/FLAC/MP4 tags...), read by libVLC's own parser — over its SMB2 module for
     /// network files. Songs without a cover get a marker file so they are not parsed again every time.
-    private func makeAudioCover(source: String) async -> UIImage? {
+    private func makeAudioCover(source: String, screen: Bool) async -> UIImage? {
         if let cached = cachedThumbnail(source: source) { return cached }
         let key = cacheKey(source)
         let noCover = diskDirectory.appendingPathComponent(key + ".none")
         if FileManager.default.fileExists(atPath: noCover.path) { return nil }
 
-        await acquireSmbSlot()
+        await acquireSmbSlot(source: source, screen: screen)
         defer { releaseSmbSlot() }
         if Task.isCancelled { return nil }
         let busy = await Self.videoIsPlaying()
@@ -211,26 +211,34 @@ actor ThumbnailService {
     // MARK: - Public entry points (de-duplicated: a thumbnail asked for by a visible cell and by the folder prefill at
     // the same time is made once).
 
-    func smbVideoThumbnail(source: String, host: String, path: String) async -> UIImage? {
-        await once(source) { await self.makeSmbVideoThumbnail(source: source, host: host, path: path) }
+    // `screen`: asked for by a cell on screen (true) or by the folder prefill / background pass (false). Cells on
+    // screen go first, the one that appeared last first of all — scrolling down a long folder makes what is now
+    // visible next, instead of waiting behind the top-to-bottom prefill.
+
+    func smbVideoThumbnail(source: String, host: String, path: String, screen: Bool = true) async -> UIImage? {
+        await once(source, screen: screen) { await self.makeSmbVideoThumbnail(source: source, host: host, path: path, screen: screen) }
     }
 
-    func smbImageThumbnail(source: String, host: String, path: String) async -> UIImage? {
-        await once(source) { await self.makeSmbImageThumbnail(source: source, host: host, path: path) }
+    func smbImageThumbnail(source: String, host: String, path: String, screen: Bool = true) async -> UIImage? {
+        await once(source, screen: screen) { await self.makeSmbImageThumbnail(source: source, host: host, path: path, screen: screen) }
     }
 
-    func audioCover(source: String) async -> UIImage? {
-        await once(source) { await self.makeAudioCover(source: source) }
+    func audioCover(source: String, screen: Bool = true) async -> UIImage? {
+        await once(source, screen: screen) { await self.makeAudioCover(source: source, screen: screen) }
     }
 
-    func folderThumbnail(host: String, path: String) async -> UIImage? {
-        await once("smbfolder://\(host)/\(path)") { await self.makeFolderThumbnail(host: host, path: path) }
+    func folderThumbnail(host: String, path: String, screen: Bool = true) async -> UIImage? {
+        await once("smbfolder://\(host)/\(path)", screen: screen) { await self.makeFolderThumbnail(host: host, path: path, screen: screen) }
     }
 
     private var inflight: [String: Task<UIImage?, Never>] = [:]
 
-    private func once(_ key: String, _ make: @escaping () async -> UIImage?) async -> UIImage? {
-        if let running = inflight[key] { return await running.value }
+    private func once(_ key: String, screen: Bool, _ make: @escaping () async -> UIImage?) async -> UIImage? {
+        if let running = inflight[key] {
+            // Already queued by the prefill: now on screen, so move it to the front.
+            if screen { promote(key) }
+            return await running.value
+        }
         let task = Task { await make() }
         inflight[key] = task
         let result = await task.value
@@ -248,10 +256,10 @@ actor ThumbnailService {
                     while !Task.isCancelled, ThumbnailPolicy.shared.isFast, let entry = await queue.next() {
                         let source = "smb://\(host)/\(entry.path)"
                         switch entry.kind {
-                        case .video: _ = await self.smbVideoThumbnail(source: source, host: host, path: entry.path)
-                        case .image: _ = await self.smbImageThumbnail(source: source, host: host, path: entry.path)
-                        case .audio: _ = await self.audioCover(source: source)
-                        case .folder: _ = await self.folderThumbnail(host: host, path: entry.path)
+                        case .video: _ = await self.smbVideoThumbnail(source: source, host: host, path: entry.path, screen: false)
+                        case .image: _ = await self.smbImageThumbnail(source: source, host: host, path: entry.path, screen: false)
+                        case .audio: _ = await self.audioCover(source: source, screen: false)
+                        case .folder: _ = await self.folderThumbnail(host: host, path: entry.path, screen: false)
                         case .other: break
                         }
                     }
@@ -265,17 +273,45 @@ actor ThumbnailService {
     // MARK: - SMB job slots (limit follows ThumbnailPolicy: 3 in fast mode, 1 otherwise)
 
     private var smbActive = 0
-    private var smbWaiters: [CheckedContinuation<Void, Never>] = []
 
-    private func acquireSmbSlot() async {
+    private struct Waiter {
+        let source: String
+        var screen: Bool
+        var order: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+    private var smbWaiters: [Waiter] = []
+    private var waiterOrder = 0
+
+    private func acquireSmbSlot(source: String, screen: Bool) async {
         if smbActive < ThumbnailPolicy.shared.jobLimit { smbActive += 1; return }
-        await withCheckedContinuation { smbWaiters.append($0) } // a releasing caller hands its slot over
+        waiterOrder += 1
+        let order = waiterOrder
+        // A releasing caller hands its slot over.
+        await withCheckedContinuation { smbWaiters.append(Waiter(source: source, screen: screen, order: order, continuation: $0)) }
+    }
+
+    /// Next job: the cell that appeared on screen most recently, else the oldest background job.
+    private func nextWaiter() -> Int? {
+        if let i = smbWaiters.indices.filter({ smbWaiters[$0].screen }).max(by: { smbWaiters[$0].order < smbWaiters[$1].order }) {
+            return i
+        }
+        return smbWaiters.indices.min(by: { smbWaiters[$0].order < smbWaiters[$1].order })
+    }
+
+    /// `source` is now on screen: its waiting job (queued by the prefill / background pass) goes to the front.
+    private func promote(_ source: String) {
+        waiterOrder += 1
+        for i in smbWaiters.indices where smbWaiters[i].source == source {
+            smbWaiters[i].screen = true
+            smbWaiters[i].order = waiterOrder
+        }
     }
 
     private func releaseSmbSlot() {
         // Hand the slot over only while under the current limit (it drops to 1 when a video opens).
-        if !smbWaiters.isEmpty, smbActive <= ThumbnailPolicy.shared.jobLimit {
-            smbWaiters.removeFirst().resume()
+        if smbActive <= ThumbnailPolicy.shared.jobLimit, let i = nextWaiter() {
+            smbWaiters.remove(at: i).continuation.resume()
         } else {
             smbActive -= 1
         }
@@ -283,9 +319,9 @@ actor ThumbnailService {
 
     /// The limit went up (video closed / fast mode switched on): start waiting jobs into the new free slots.
     func policyChanged() {
-        while !smbWaiters.isEmpty, smbActive < ThumbnailPolicy.shared.jobLimit {
+        while smbActive < ThumbnailPolicy.shared.jobLimit, let i = nextWaiter() {
             smbActive += 1
-            smbWaiters.removeFirst().resume()
+            smbWaiters.remove(at: i).continuation.resume()
         }
     }
 
@@ -356,7 +392,7 @@ actor ThumbnailService {
     /// A folder's picture made from what is inside it: up to four of its pictures/videos in a 2×2 mosaic (one fills
     /// the whole tile). Uses thumbnails that already exist first and makes at most two new ones, so a folder view
     /// does not turn into dozens of SMB sessions. Folders with nothing to show get a marker and keep the plain icon.
-    private func makeFolderThumbnail(host: String, path: String) async -> UIImage? {
+    private func makeFolderThumbnail(host: String, path: String, screen: Bool) async -> UIImage? {
         let source = "smbfolder://\(host)/\(path)"
         if let cached = cachedThumbnail(source: source) { return cached }
         let key = cacheKey(source)
@@ -381,8 +417,8 @@ actor ThumbnailService {
             if Task.isCancelled { return nil }
             let entrySource = "smb://\(host)/\(entry.path)"
             let image = entry.isImage
-                ? await smbImageThumbnail(source: entrySource, host: host, path: entry.path)
-                : await smbVideoThumbnail(source: entrySource, host: host, path: entry.path)
+                ? await smbImageThumbnail(source: entrySource, host: host, path: entry.path, screen: screen)
+                : await smbVideoThumbnail(source: entrySource, host: host, path: entry.path, screen: screen)
             made += 1
             if let image { tiles.append(image) }
         }
@@ -475,9 +511,12 @@ actor ThumbnailService {
 
     /// The frames of an SMB video's moving thumbnail: made once (one libVLC session seeking through the video,
     /// in the same job slots as normal thumbnails, never while a video is open), then kept on disk.
-    func smbPreview(source: String, host: String, path: String) async -> [UIImage] {
-        if let running = previewInflight[source] { return await running.value }
-        let task = Task { await self.makeSmbPreview(source: source, host: host, path: path) }
+    func smbPreview(source: String, host: String, path: String, screen: Bool = true) async -> [UIImage] {
+        if let running = previewInflight[source] {
+            if screen { promote(source) }
+            return await running.value
+        }
+        let task = Task { await self.makeSmbPreview(source: source, host: host, path: path, screen: screen) }
         previewInflight[source] = task
         let result = await task.value
         previewInflight[source] = nil
@@ -486,13 +525,13 @@ actor ThumbnailService {
 
     private var previewInflight: [String: Task<[UIImage], Never>] = [:]
 
-    private func makeSmbPreview(source: String, host: String, path: String) async -> [UIImage] {
+    private func makeSmbPreview(source: String, host: String, path: String, screen: Bool) async -> [UIImage] {
         let existing = cachedPreview(source: source)
         if !existing.isEmpty { return existing }
         let key = cacheKey(source)
         let none = diskDirectory.appendingPathComponent(key + ".p.none")
         if FileManager.default.fileExists(atPath: none.path) { return [] }
-        await acquireSmbSlot()
+        await acquireSmbSlot(source: source, screen: screen)
         defer { releaseSmbSlot() }
         if Task.isCancelled { return [] }
         if await Self.videoIsPlaying() { return [] }
