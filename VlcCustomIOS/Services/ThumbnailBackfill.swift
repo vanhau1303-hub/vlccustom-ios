@@ -24,13 +24,15 @@ final class ThumbnailBackfill: ObservableObject {
     }
 
     enum Phase: Equatable {
-        case idle, scanning, working, waitingForVideo, waitingForScreen, paused
+        case idle, scanning, working, waitingForVideo, waitingForApp, paused
     }
 
-    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var phase: Phase = .idle {
+        didSet { if phase != oldValue { PlaybackDiagnostics.append("backfill: \(phase) · \(folderName)") } }
+    }
     @Published private(set) var folderName = ""
-    @Published private(set) var done = 0
-    @Published private(set) var total = 0
+    /// The folder being worked on: what is on disk right now, re-counted after every job.
+    @Published private(set) var current: Folder?
     /// Folders still queued after the current one.
     @Published private(set) var foldersLeft = 0
     @Published var userPaused = false
@@ -41,14 +43,13 @@ final class ThumbnailBackfill: ObservableObject {
     @Published private(set) var excluded: Set<Folder>
     /// What happened to each folder in this session.
     @Published private(set) var states: [Folder: FolderState] = [:]
+    /// Thumbnails actually on disk for each folder looked at in this session.
+    @Published private(set) var stats: [Folder: ThumbnailService.FolderStats] = [:]
     /// The folder on screen right now.
     @Published private(set) var browsing: Folder?
 
     enum FolderState: Equatable {
-        case waiting, scanning
-        case working(done: Int, total: Int)
-        case complete(made: Int)
-        case unreachable
+        case waiting, scanning, working, complete, unreachable
     }
 
     private var queue: [Folder] = []
@@ -186,8 +187,7 @@ final class ThumbnailBackfill: ObservableObject {
             }
         }
         phase = .idle
-        total = 0
-        done = 0
+        current = nil
         task = nil
         ThumbnailEvents.shared.changed()
         if nextFolderAvailable, !Task.isCancelled { start() }
@@ -198,36 +198,45 @@ final class ThumbnailBackfill: ObservableObject {
         phase = .scanning
         states[folder] = .scanning
         folderName = folder.name
+        current = folder
         guard let connection = await SmbRegistry.shared.getOrReconnect(folder.host),
               let items = try? await connection.list(path: folder.path) else {
             states[folder] = .unreachable
+            PlaybackDiagnostics.append("backfill: cannot list \(folder.host)/\(folder.path)")
             return true
         }
         let service = ThumbnailService.shared
+        let entries = items.filter { $0.kind != .other }
+        stats[folder] = await service.stats(host: folder.host, entries: entries)
 
         // Normal thumbnails first, then the moving-thumbnail frames (made even while that display is off, so they
         // are there the moment it is switched on).
         var jobs: [(entry: SmbEntry, preview: Bool)] = []
-        for entry in items where entry.kind != .other {
+        for entry in entries {
             let source = entry.isDirectory ? "smbfolder://\(folder.host)/\(entry.path)" : "smb://\(folder.host)/\(entry.path)"
             if await service.needsThumbnail(source: source) { jobs.append((entry, false)) }
         }
-        for entry in items where entry.kind == .video {
+        for entry in entries where entry.kind == .video {
             if await service.needsPreview(source: "smb://\(folder.host)/\(entry.path)") { jobs.append((entry, true)) }
         }
+        PlaybackDiagnostics.append("backfill: \(folder.path) — \(entries.count) items, \(jobs.count) to make")
         guard !jobs.isEmpty else {
-            states[folder] = .complete(made: 0)
+            states[folder] = .complete
             return true
         }
-        total = jobs.count
-        done = 0
-        states[folder] = .working(done: 0, total: jobs.count)
+        states[folder] = .working
 
+        var sinceRefresh = 0
         for job in jobs {
             if Task.isCancelled { return false }
             if let browsing, browsing != folder, !finished.contains(browsing) { return false }
             let source = job.entry.isDirectory ? "smbfolder://\(folder.host)/\(job.entry.path)" : "smb://\(folder.host)/\(job.entry.path)"
-            // A video opened half-way makes the job give up without a result: wait and do it again.
+            // Made meanwhile by the screen (the folder on screen makes its own): nothing to do.
+            if job.preview ? !(await service.needsPreview(source: source)) : !(await service.needsThumbnail(source: source)) {
+                continue
+            }
+            // A video opened (or the app left the screen) half-way makes the job give up without a result: wait
+            // and do it again.
             var attempts = 0
             repeat {
                 await waitForTurn()
@@ -235,14 +244,21 @@ final class ThumbnailBackfill: ObservableObject {
                 phase = .working
                 await make(job.entry, preview: job.preview, host: folder.host, source: source)
                 attempts += 1
-            } while PlaybackActivity.shared.isBusy && attempts < 5
-            done += 1
-            states[folder] = .working(done: done, total: total)
-            if done % 4 == 0 { ThumbnailEvents.shared.changed() }
+            } while (PlaybackActivity.shared.isBusy || !Self.appActive) && attempts < 5
+            stats[folder] = await service.stats(host: folder.host, entries: entries)
+            sinceRefresh += 1
+            if sinceRefresh >= 4 {
+                sinceRefresh = 0
+                ThumbnailEvents.shared.changed()
+            }
         }
-        states[folder] = .complete(made: total)
+        stats[folder] = await service.stats(host: folder.host, entries: entries)
+        states[folder] = .complete
+        PlaybackDiagnostics.append("backfill: \(folder.path) done")
         return true
     }
+
+    private static var appActive: Bool { UIApplication.shared.applicationState == .active }
 
     private func make(_ entry: SmbEntry, preview: Bool, host: String, source: String) async {
         let service = ThumbnailService.shared
@@ -259,15 +275,17 @@ final class ThumbnailBackfill: ObservableObject {
         }
     }
 
-    /// Holds the job while the user paused it, a video is open, or thumbnails for the screen are being made.
+    /// Holds the job while the user paused it, a video is open or the app is not on screen (iOS stops hardware
+    /// decoding in the background, so frames would fail). Thumbnails for the folder on screen do not need waiting
+    /// for: they jump ahead in `ThumbnailService`'s queue on their own.
     private func waitForTurn() async {
         while !Task.isCancelled {
             if userPaused {
                 phase = .paused
             } else if PlaybackActivity.shared.isBusy {
                 phase = .waitingForVideo
-            } else if !(await ThumbnailService.shared.isIdle) {
-                phase = .waitingForScreen
+            } else if !Self.appActive {
+                phase = .waitingForApp
             } else {
                 return
             }
@@ -284,16 +302,9 @@ struct ThumbnailBackfillStatusRow: View {
         HStack(spacing: 10) {
             Image(systemName: icon).foregroundStyle(.secondary).frame(width: 22)
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    Text(title).lineLimit(2).truncationMode(.middle)
-                    Spacer(minLength: 4)
-                    if backfill.phase != .idle, backfill.total > 0 {
-                        Text("\(backfill.done)/\(backfill.total)").monospacedDigit().foregroundStyle(.secondary)
-                    }
-                }
-                .font(.subheadline)
-                if backfill.phase != .idle, backfill.total > 0 {
-                    ProgressView(value: Double(backfill.done), total: Double(max(1, backfill.total)))
+                Text(title).font(.subheadline).lineLimit(2).truncationMode(.middle)
+                if backfill.phase != .idle, let folder = backfill.current, let stats = backfill.stats[folder] {
+                    ThumbnailStatsView(stats: stats, showBars: true)
                 }
             }
             if backfill.phase != .idle {
@@ -312,10 +323,10 @@ struct ThumbnailBackfillStatusRow: View {
         let more = backfill.foldersLeft > 0 ? " (+\(backfill.foldersLeft) thư mục chờ)" : ""
         switch backfill.phase {
         case .idle: return "Không có gì cần làm — thumbnail các thư mục đã xem đã đủ"
-        case .scanning: return "Đang xem thư mục \(backfill.folderName)…"
+        case .scanning: return "Đang đọc thư mục \(backfill.folderName)…"
         case .paused: return "Đã tạm dừng · \(backfill.folderName)"
         case .waitingForVideo: return "Chờ xem xong video · \(backfill.folderName)"
-        case .waitingForScreen: return "Nhường thư mục đang mở · \(backfill.folderName)"
+        case .waitingForApp: return "Chờ mở lại app · \(backfill.folderName)"
         case .working: return "Đang tạo · \(backfill.folderName)\(more)"
         }
     }
@@ -326,6 +337,30 @@ struct ThumbnailBackfillStatusRow: View {
         case .paused: return "pause.circle"
         case .waitingForVideo: return "play.rectangle"
         default: return "photo.stack"
+        }
+    }
+}
+
+/// "Thumbnail 25/30 · Động 10/22 · 2 lỗi", counted from what is on disk.
+struct ThumbnailStatsView: View {
+    let stats: ThumbnailService.FolderStats
+    var showBars = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text("Thumbnail \(stats.thumbs)/\(stats.media)")
+                if stats.videos > 0 { Text("Động \(stats.previews)/\(stats.videos)") }
+                if stats.failed > 0 { Text("\(stats.failed) lỗi").foregroundStyle(.orange) }
+            }
+            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            if showBars {
+                ProgressView(value: Double(stats.thumbs + stats.failed), total: Double(max(1, stats.media)))
+                if stats.videos > 0 {
+                    ProgressView(value: Double(stats.previews + stats.previewsFailed), total: Double(stats.videos))
+                        .tint(.purple)
+                }
+            }
         }
     }
 }
@@ -363,7 +398,13 @@ struct ThumbnailBackfillFoldersView: View {
                         }
                         .opacity(included ? 1 : 0.5)
                         Spacer(minLength: 8)
-                        stateView(backfill.states[folder])
+                        VStack(alignment: .trailing, spacing: 2) {
+                            stateView(backfill.states[folder])
+                            if let stats = backfill.stats[folder] {
+                                Text("\(stats.thumbs)/\(stats.media)" + (stats.videos > 0 ? " · động \(stats.previews)/\(stats.videos)" : ""))
+                                    .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                            }
+                        }
                     }
                     .swipeActions {
                         Button("Quên", role: .destructive) { backfill.forget(folder) }
@@ -390,15 +431,13 @@ struct ThumbnailBackfillFoldersView: View {
         switch state {
         case .waiting?:
             Text("Đang chờ").font(.caption).foregroundStyle(.secondary)
-        case .scanning?:
-            ProgressView().controlSize(.small)
-        case .working(let done, let total)?:
-            VStack(alignment: .trailing, spacing: 2) {
-                Text("\(done)/\(total)").font(.caption).monospacedDigit()
-                ProgressView(value: Double(done), total: Double(max(1, total))).frame(width: 60)
+        case .scanning?, .working?:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Đang làm").font(.caption)
             }
-        case .complete(let made)?:
-            Label(made > 0 ? "Xong (+\(made))" : "Đủ", systemImage: "checkmark.circle.fill")
+        case .complete?:
+            Label("Xong", systemImage: "checkmark.circle.fill")
                 .font(.caption).foregroundStyle(.green).labelStyle(.titleAndIcon)
         case .unreachable?:
             Label("Không mở được", systemImage: "exclamationmark.triangle")

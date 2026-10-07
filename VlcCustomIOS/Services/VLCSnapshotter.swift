@@ -141,10 +141,20 @@ final class VLCSnapshotter: @unchecked Sendable {
             return sink.crop(image, visibleWidth: Int(w), visibleHeight: Int(h))
         }
 
+        /// Stops and frees the player — on its own thread, waited for at most 6 s: a stop stuck on a dead SMB read
+        /// used to hold its grab slot for good, and with both slots gone no thumbnail was made any more.
         func close() {
-            libvlc_media_player_stop(player)
-            libvlc_media_player_release(player)
-            Unmanaged<FrameSink>.fromOpaque(opaque).release()
+            let player = self.player, opaque = self.opaque
+            let stopped = DispatchSemaphore(value: 0)
+            DispatchQueue.global(qos: .utility).async {
+                libvlc_media_player_stop(player)
+                libvlc_media_player_release(player)
+                Unmanaged<FrameSink>.fromOpaque(opaque).release()
+                stopped.signal()
+            }
+            if stopped.wait(timeout: .now() + 6) == .timedOut {
+                PlaybackDiagnostics.append("thumb: libVLC player did not stop within 6 s — left behind")
+            }
         }
     }
 

@@ -136,7 +136,8 @@ actor ThumbnailService {
             PlaybackDiagnostics.append("thumb: VLC gave no frame for \(path)")
             // Only remember it if nothing else was going on (a video starting mid-way can make it fail too).
             let busyNow = await Self.videoIsPlaying()
-            if !busyNow { FileManager.default.createFile(atPath: noFrame.path, contents: nil) }
+            let active = await Self.appIsActive()
+            if !busyNow && active { FileManager.default.createFile(atPath: noFrame.path, contents: nil) }
             return nil
         }
         let image = UIImage(cgImage: cgImage)
@@ -206,6 +207,12 @@ actor ThumbnailService {
     @MainActor
     private static func videoIsPlaying() -> Bool {
         PlaybackActivity.shared.isBusy
+    }
+
+    /// In the background iOS refuses hardware decoding: a frame failing then says nothing about the file.
+    @MainActor
+    private static func appIsActive() -> Bool {
+        UIApplication.shared.applicationState == .active
     }
 
     // MARK: - Public entry points (de-duplicated: a thumbnail asked for by a visible cell and by the folder prefill at
@@ -545,7 +552,8 @@ actor ThumbnailService {
         let frames = images.filter(VLCSnapshotter.isUsable).map { UIImage(cgImage: $0) }
         guard frames.count > 1 else {
             let busy = await Self.videoIsPlaying()
-            if !busy { FileManager.default.createFile(atPath: none.path, contents: nil) }
+            let active = await Self.appIsActive()
+            if !busy && active { FileManager.default.createFile(atPath: none.path, contents: nil) }
             return []
         }
         for (i, frame) in frames.enumerated() {
@@ -577,9 +585,36 @@ actor ThumbnailService {
             && !fm.fileExists(atPath: diskDirectory.appendingPathComponent(key + ".p.none").path)
     }
 
-    /// No SMB thumbnail job running or waiting — the background pass only starts one then, so the folder on
-    /// screen always goes first.
-    var isIdle: Bool { smbActive == 0 && smbWaiters.isEmpty }
+    /// What a folder has on disk: thumbnails made / given up on, moving-thumbnail frames made / given up on.
+    struct FolderStats: Equatable {
+        var media = 0, thumbs = 0, failed = 0
+        var videos = 0, previews = 0, previewsFailed = 0
+    }
+
+    func stats(host: String, entries: [SmbEntry]) -> FolderStats {
+        let fm = FileManager.default
+        var stats = FolderStats()
+        for entry in entries where entry.kind != .other {
+            let source = entry.isDirectory ? "smbfolder://\(host)/\(entry.path)" : "smb://\(host)/\(entry.path)"
+            let key = cacheKey(source)
+            stats.media += 1
+            if fm.fileExists(atPath: diskURL(key).path) {
+                stats.thumbs += 1
+            } else if fm.fileExists(atPath: diskDirectory.appendingPathComponent(key + ".none").path) {
+                stats.failed += 1
+            }
+            if entry.kind == .video {
+                stats.videos += 1
+                if fm.fileExists(atPath: previewURL(key, 0).path) {
+                    stats.previews += 1
+                } else if fm.fileExists(atPath: diskDirectory.appendingPathComponent(key + ".p.none").path) {
+                    stats.previewsFailed += 1
+                }
+            }
+        }
+        return stats
+    }
+
 
     /// "Buộc lấy thumbnail": the normal spots (25%, then 40/60/15/75% past black frames) with much more time, over
     /// libVLC's SMB first and the compatibility proxy next, ignoring any "no frame" marker. On success it becomes
