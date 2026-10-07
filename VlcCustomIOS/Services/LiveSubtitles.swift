@@ -488,7 +488,7 @@ final class LiveSubtitles: ObservableObject {
 
     /// Translates queued lines in batches (one request for up to `batchSize` lines, instead of one per line),
     /// nearest to the playhead first, unless the service asked us to wait.
-    private func translatePendingNow(batchSize: Int = 30) async {
+    private func translatePendingNow(batchSize: Int = 12) async {
         guard let translateTo, !pending.isEmpty else { return }
         if let pausedUntil, pausedUntil > Date() { updateTranslationNote(); return }
         let playhead = playheadProvider?() ?? 0
@@ -498,12 +498,13 @@ final class LiveSubtitles: ObservableObject {
             if aAhead != bAhead { return aAhead }
             return abs(a - playhead) < abs(b - playhead)
         }
-        // Up to `batchSize` lines but no more than ~1500 characters (the request is a URL).
+        // Up to `batchSize` lines but no more than ~900 characters: bigger batches came back with lines merged or
+        // shifted (worse translations); the 429s are handled by spacing the requests out instead.
         var picked: [Int] = []
         var chars = 0
         for key in keys {
             let length = pending[key]?.count ?? 0
-            if !picked.isEmpty && (picked.count >= batchSize || chars + length > 1500) { break }
+            if !picked.isEmpty && (picked.count >= batchSize || chars + length > 900) { break }
             picked.append(key)
             chars += length + 1
         }

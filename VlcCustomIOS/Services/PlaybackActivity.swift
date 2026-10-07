@@ -53,5 +53,5 @@ final class ThumbnailPolicy: @unchecked Sendable {
     var isFast: Bool { fastEnabled && !videoOpen }
 
     /// Concurrent SMB thumbnail jobs allowed right now.
-    var jobLimit: Int { isFast ? 3 : 1 }
+    var jobLimit: Int { isFast ? 4 : 1 }
 }

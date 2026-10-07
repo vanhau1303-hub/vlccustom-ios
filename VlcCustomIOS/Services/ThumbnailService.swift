@@ -362,8 +362,11 @@ actor ThumbnailService {
     static func vlcSnapshot(host: String, path: String, login: SmbPlayback.Login?, width: CGFloat, position: Float,
                             route: SmbPlaybackRoute = .direct) async -> CGImage? {
         guard let target = SmbPlayback.location(host: host, path: path, route: route, login: login) else { return nil }
+        // The length from the file's header (a few small reads): libVLC then opens the file once, at the spot.
+        var lengthMs: Int64?
+        if position > 0 { lengthMs = await MediaHeaderDuration.lengthMs(host: host, path: path) }
         return await VLCSnapshotter.snapshot(location: target.url, options: target.options,
-                                             maxWidth: Int(width), position: position)
+                                             maxWidth: Int(width), position: position, lengthMs: lengthMs)
     }
 
     /// Downsized thumbnail for a picture at `source`; `data` is provided directly for SMB images (fetched by the
@@ -571,8 +574,9 @@ actor ThumbnailService {
         let login = await SmbRegistry.shared.login(for: host)
         let route: SmbPlaybackRoute = SmbRoutePreferences.prefersProxy(source) ? .proxy : .direct
         guard let target = SmbPlayback.location(host: host, path: path, route: route, login: login) else { return [] }
+        let lengthMs = await MediaHeaderDuration.lengthMs(host: host, path: path)
         let images = await VLCSnapshotter.frames(location: target.url, options: target.options, maxWidth: 400,
-                                                 positions: Self.previewPositions)
+                                                 positions: Self.previewPositions, lengthMs: lengthMs)
         // Black / blank frames (fades, credits) are left out of the loop.
         let frames = images.filter(VLCSnapshotter.isUsable).map { UIImage(cgImage: $0) }
         guard frames.count > 1 else {
@@ -651,8 +655,10 @@ actor ThumbnailService {
             if Task.isCancelled { return nil }
             await progress(route == .direct ? "Đang lấy (cách thường)…" : "Cách thường không được — thử chế độ tương thích…")
             guard let target = SmbPlayback.location(host: host, path: path, route: route, login: login) else { continue }
+            let lengthMs = await MediaHeaderDuration.lengthMs(host: host, path: path)
             guard let cgImage = await VLCSnapshotter.snapshot(location: target.url, options: target.options,
-                                                              maxWidth: 640, position: 0.25, timeout: 90, spotTimeout: 18)
+                                                              maxWidth: 640, position: 0.25, timeout: 90, spotTimeout: 18,
+                                                              lengthMs: lengthMs)
             else { continue }
             let image = UIImage(cgImage: cgImage)
             setThumbnail(image, source: source)

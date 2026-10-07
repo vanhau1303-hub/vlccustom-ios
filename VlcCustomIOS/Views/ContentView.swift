@@ -138,7 +138,7 @@ struct SettingsView: View {
                         Task { await ThumbnailService.shared.policyChanged() }
                     }
                 } footer: {
-                    Text("Tạo 3 thumbnail cùng lúc và tạo trước cho cả thư mục. Khi mở video sẽ tự trở về chế độ bình thường (tạm dừng tạo thumbnail) để video không bị giật, đóng video thì chạy nhanh lại.")
+                    Text("Tạo 4 thumbnail cùng lúc và tạo trước cho cả thư mục. Khi mở video sẽ tự trở về chế độ bình thường (tạm dừng tạo thumbnail) để video không bị giật, đóng video thì chạy nhanh lại.")
                 }
                 Section {
                     Toggle(isOn: $backfillThumbnails) {

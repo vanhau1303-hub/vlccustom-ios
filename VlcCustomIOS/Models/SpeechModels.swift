@@ -36,14 +36,20 @@ let subtitleLanguages: [SubtitleLanguage] = [
 
 /// WhisperKit downloads a Core ML model named by these variants from `argmaxinc/whisperkit-coreml` on first use.
 enum WhisperModelSize: String, CaseIterable, Identifiable {
+    // Raw values are the Core ML folder names in argmaxinc/whisperkit-coreml ("openai_whisper-<raw value>").
+    // Small and Turbo are the 4-bit-quantized builds: a fraction of the download, same accuracy class.
     case tiny, base
+    case small = "small_216MB"
+    case turbo = "large-v3-v20240930_turbo_632MB"
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .tiny: return "Tiny (nhanh nhất, kém chính xác hơn)"
-        case .base: return "Base (chính xác hơn)"
+        case .tiny: return "Tiny (nhanh nhất, hay nghe sai)"
+        case .base: return "Base (nhanh)"
+        case .small: return "Small (chính xác hơn, tải ~220MB)"
+        case .turbo: return "Turbo (chính xác nhất, tải ~630MB)"
         }
     }
 }
