@@ -172,6 +172,7 @@ final class VLCSnapshotter: @unchecked Sendable {
                                   minFrames: positions.isEmpty ? 1 : 3) else { return [] }
         var length: Int64 = 0
         var first: CGImage?
+        let opening = Date()
         while Date() < deadline, !cancelled() {
             length = libvlc_media_player_get_length(probe.player)
             if length > 0 && !positions.isEmpty && length > 20_000 { break }
@@ -181,9 +182,15 @@ final class VLCSnapshotter: @unchecked Sendable {
                 break
             }
         }
-        if positions.isEmpty || length <= 20_000 {
-            // Still picture, short clip or unknown length: what this player shows. For a clip, watch a little longer
-            // for a frame that is not black.
+        // A file that took long just to open (fragmented MP4 without an index through the proxy: ~9 s of scanning)
+        // would take as long again for every spot: use this player instead, from the start.
+        let slowToOpen = Date().timeIntervalSince(opening) > 3
+        if positions.isEmpty || length <= 20_000 || slowToOpen {
+            // Still picture, short clip, unknown length or slow file: what this player shows. For a clip, watch a
+            // little longer for a frame that is not black.
+            if first == nil, !positions.isEmpty {
+                first = probe.frame(until: deadline, cancelled: cancelled)
+            }
             if let image = first {
                 if firstUsable {
                     var current = image
