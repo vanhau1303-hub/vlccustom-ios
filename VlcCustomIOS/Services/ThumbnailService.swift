@@ -244,13 +244,25 @@ actor ThumbnailService {
         if let running = inflight[key] {
             // Already queued by the prefill: now on screen, so move it to the front.
             if screen { promote(key) }
-            return await running.value
+            return await waitFor(running, key: key, screen: screen)
         }
         let task = Task { await make() }
         inflight[key] = task
-        let result = await task.value
+        let result = await waitFor(task, key: key, screen: screen)
         inflight[key] = nil
         return result
+    }
+
+    /// Waits for a job; when the cell that asked scrolls away (its task is cancelled) the job drops back to the
+    /// background queue. Without this, a long scroll through a 1000-file folder left hundreds of "on screen" jobs
+    /// for cells long gone, all served before any background work — the background pass looked frozen.
+    private func waitFor<T>(_ task: Task<T, Never>, key: String, screen: Bool) async -> T {
+        guard screen else { return await task.value }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            Task { await self.demote(key) }
+        }
     }
 
     /// Fast mode: make every thumbnail of a folder ahead of the scroll, `jobLimit` at a time, top to bottom. Stops
@@ -300,10 +312,23 @@ actor ThumbnailService {
 
     /// Next job: the cell that appeared on screen most recently, else the oldest background job.
     private func nextWaiter() -> Int? {
-        if let i = smbWaiters.indices.filter({ smbWaiters[$0].screen }).max(by: { smbWaiters[$0].order < smbWaiters[$1].order }) {
-            return i
+        handoffs += 1
+        let onScreen = smbWaiters.indices.filter { smbWaiters[$0].screen }
+            .max { smbWaiters[$0].order < smbWaiters[$1].order }
+        let background = smbWaiters.indices.filter { !smbWaiters[$0].screen }
+            .min { smbWaiters[$0].order < smbWaiters[$1].order }
+        // Every 4th free slot goes to the background (prefill / background pass) even while the screen keeps
+        // asking, so it always moves on.
+        if let background, onScreen == nil || handoffs % 4 == 0 { return background }
+        return onScreen ?? background
+    }
+    private var handoffs = 0
+
+    /// The cell that asked for `source` is gone: its job goes back to the background queue.
+    private func demote(_ source: String) {
+        for i in smbWaiters.indices where smbWaiters[i].source == source {
+            smbWaiters[i].screen = false
         }
-        return smbWaiters.indices.min(by: { smbWaiters[$0].order < smbWaiters[$1].order })
     }
 
     /// `source` is now on screen: its waiting job (queued by the prefill / background pass) goes to the front.
@@ -521,11 +546,11 @@ actor ThumbnailService {
     func smbPreview(source: String, host: String, path: String, screen: Bool = true) async -> [UIImage] {
         if let running = previewInflight[source] {
             if screen { promote(source) }
-            return await running.value
+            return await waitFor(running, key: source, screen: screen)
         }
         let task = Task { await self.makeSmbPreview(source: source, host: host, path: path, screen: screen) }
         previewInflight[source] = task
-        let result = await task.value
+        let result = await waitFor(task, key: source, screen: screen)
         previewInflight[source] = nil
         return result
     }

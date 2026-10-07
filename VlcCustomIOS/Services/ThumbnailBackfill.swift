@@ -227,6 +227,7 @@ final class ThumbnailBackfill: ObservableObject {
         states[folder] = .working
 
         var sinceRefresh = 0
+        var lastCount = Date()
         for job in jobs {
             if Task.isCancelled { return false }
             if let browsing, browsing != folder, !finished.contains(browsing) { return false }
@@ -245,7 +246,11 @@ final class ThumbnailBackfill: ObservableObject {
                 await make(job.entry, preview: job.preview, host: folder.host, source: source)
                 attempts += 1
             } while (PlaybackActivity.shared.isBusy || !Self.appActive) && attempts < 5
-            stats[folder] = await service.stats(host: folder.host, entries: entries)
+            // Recounting a 1000-file folder after every job kept the thumbnail actor busy: every few seconds.
+            if Date().timeIntervalSince(lastCount) > 3 {
+                stats[folder] = await service.stats(host: folder.host, entries: entries)
+                lastCount = Date()
+            }
             sinceRefresh += 1
             if sinceRefresh >= 4 {
                 sinceRefresh = 0
