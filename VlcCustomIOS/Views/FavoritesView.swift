@@ -117,7 +117,7 @@ final class AppNavigator: ObservableObject {
         let path: String
     }
 
-    @Published var selectedTab = ResumeStore.tab ?? 1 {
+    @Published var selectedTab = ProcessInfo.processInfo.environment["DEMO_TAB"].flatMap(Int.init) ?? ResumeStore.tab ?? 1 {
         didSet { ResumeStore.tab = selectedTab }
     }
     /// Position to reopen the next video at (restored after iOS closed the app while it was playing).

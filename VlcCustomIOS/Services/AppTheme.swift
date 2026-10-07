@@ -73,14 +73,13 @@ final class AppTheme: ObservableObject {
             ?? .system
     }
 
-    /// UIKit-presented things (alerts, action sheets, share sheet) follow the theme too.
+    /// UIKit-presented things (alerts, action sheets, share sheet) take the main color too. Light / dark is left to
+    /// SwiftUI's preferredColorScheme (forcing the window's style as well fought with it at launch).
     func applyToWindows() {
         let tint = UIColor(accent)
-        let style: UIUserInterfaceStyle = appearance == .light ? .light : appearance == .dark ? .dark : .unspecified
         for scene in UIApplication.shared.connectedScenes {
-            for window in (scene as? UIWindowScene)?.windows ?? [] {
+            for window in (scene as? UIWindowScene)?.windows ?? [] where window.tintColor != tint {
                 window.tintColor = tint
-                window.overrideUserInterfaceStyle = style
             }
         }
     }

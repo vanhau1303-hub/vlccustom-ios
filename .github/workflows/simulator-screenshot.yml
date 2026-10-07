@@ -135,6 +135,7 @@ jobs:
           export SIMCTL_CHILD_DEMO_SMB_PASS="testpass"
           export SIMCTL_CHILD_DEMO_FAVORITES="1"
           export SIMCTL_CHILD_DEMO_SMB_FILE="media/Phim/Khám phá vũ trụ.mp4"
+          export SIMCTL_CHILD_DEMO_VIEWMODE="grid"
           shot() { # name tab accent appearance wait [browse]
             xcrun simctl terminate "$DEVICE_ID" com.vlccustom.ios >/dev/null 2>&1 || true
             # DEMO_SMB_BROWSE set (even empty = the list of shares) opens Mạng instead of playing DEMO_SMB_FILE.
@@ -159,10 +160,19 @@ jobs:
           SIMCTL_CHILD_DEMO_ACCENT="#FF375F" SIMCTL_CHILD_DEMO_APPEARANCE=dark xcrun simctl launch "$DEVICE_ID" com.vlccustom.ios
           sleep 3
           xcrun simctl io "$DEVICE_ID" screenshot "screenshots/08_player_pink.png"
+          sleep 6
+          xcrun simctl io "$DEVICE_ID" screenshot "screenshots/09_player_playing.png"
+          # The app's diagnostics log, to see what thumbnails did.
+          DATA=$(xcrun simctl get_app_container "$DEVICE_ID" com.vlccustom.ios data)
+          cat "$DATA/Library/Caches/vlc_diagnostics.log.old" "$DATA/Library/Caches/vlc_diagnostics.log" > screenshots/app.log 2>/dev/null || true
+          ls -la "$DATA/Library/Application Support/Thumbnails" | head -40 > screenshots/thumbs.txt || true
 
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: VlcCustomIOS-simulator-screenshots
-          path: screenshots/*.png
+          path: |
+            screenshots/*.png
+            screenshots/*.log
+            screenshots/*.txt

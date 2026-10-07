@@ -33,7 +33,6 @@ struct ContentView: View {
             }
         )
         .task {
-            if let tab = Self.demoTab() { navigator.selectedTab = tab }
             // Background thumbnails for folders already visited, a little after start (SMB logins first).
             Task {
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
@@ -150,7 +149,10 @@ struct SettingsView: View {
                                 Spacer()
                                 Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                             }
+                            .contentShape(Rectangle())
                         }
+                        // Row text in the normal text color (a List button is drawn in the main color otherwise).
+                        .buttonStyle(.plain)
                     }
                 }
                 Section {

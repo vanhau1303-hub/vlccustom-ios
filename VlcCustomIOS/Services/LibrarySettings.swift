@@ -60,6 +60,8 @@ final class LibrarySettings: ObservableObject {
 
     private init() {
         thumbnailSize = ThumbnailSize(rawValue: UserDefaults.standard.string(forKey: Self.sizeKey) ?? "") ?? .medium
-        viewMode = LibraryViewMode(rawValue: UserDefaults.standard.string(forKey: Self.modeKey) ?? "") ?? .list
+        // DEMO_VIEWMODE: CI screenshots of the grid.
+        let demo = ProcessInfo.processInfo.environment["DEMO_VIEWMODE"]
+        viewMode = LibraryViewMode(rawValue: demo ?? UserDefaults.standard.string(forKey: Self.modeKey) ?? "") ?? .list
     }
 }
