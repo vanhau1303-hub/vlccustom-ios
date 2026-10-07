@@ -214,7 +214,6 @@ final class ThumbnailBackfill: ObservableObject {
         phase = .idle
         current = nil
         task = nil
-        ThumbnailEvents.shared.changed()
         if nextJobAvailable, !Task.isCancelled { start() }
     }
 
@@ -223,7 +222,6 @@ final class ThumbnailBackfill: ObservableObject {
     private var passCursor = 0
     private var passInterrupted = false
     private var passLastCount = Date()
-    private var passSinceRefresh = 0
 
     /// Returns false when it stopped half-way because another folder is now being browsed.
     private func process(_ folder: Folder, stage: Stage) async -> Bool {
@@ -266,7 +264,6 @@ final class ThumbnailBackfill: ObservableObject {
         passInterrupted = false
         let lanes = ThumbnailPolicy.shared.isFast ? 2 : 1
         passLastCount = Date()
-        passSinceRefresh = 0
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<lanes {
                 group.addTask { @MainActor [weak self] in
@@ -294,11 +291,6 @@ final class ThumbnailBackfill: ObservableObject {
                         if Date().timeIntervalSince(self.passLastCount) > 3 {
                             self.passLastCount = Date()
                             self.stats[folder] = await service.stats(host: folder.host, entries: entries)
-                        }
-                        self.passSinceRefresh += 1
-                        if self.passSinceRefresh >= 4 {
-                            self.passSinceRefresh = 0
-                            ThumbnailEvents.shared.changed()
                         }
                     }
                 }
@@ -554,7 +546,6 @@ final class ForcedThumbnails: ObservableObject {
                 failed.insert(job.source)
                 PlaybackDiagnostics.append("thumb: forced \(job.path) — no frame on either route")
             }
-            ThumbnailEvents.shared.changed()
         }
         worker = nil
     }

@@ -11,8 +11,9 @@ import ImageIO
 actor ThumbnailService {
     static let shared = ThumbnailService()
 
-    private let memoryCache = NSCache<NSString, UIImage>()
-    private let previewCache = NSCache<NSString, NSArray>()
+    // In `ThumbnailMemory` (thread-safe NSCaches) so cells can read and decode in parallel, off this actor.
+    private var memoryCache: NSCache<NSString, UIImage> { ThumbnailMemory.shared.images }
+    private var previewCache: NSCache<NSString, NSArray> { ThumbnailMemory.shared.previews }
     private let diskDirectory: URL
 
     /// Application Support/Thumbnails — the app's own storage, not Caches (which iOS empties whenever it likes, so
@@ -50,7 +51,9 @@ actor ThumbnailService {
         previewCache.totalCostLimit = 30 * 1024 * 1024
     }
 
-    private func cacheKey(_ source: String) -> String {
+    private func cacheKey(_ source: String) -> String { Self.key(source) }
+
+    nonisolated static func key(_ source: String) -> String {
         let digest = SHA256.hash(data: Data(source.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
     }
@@ -91,8 +94,35 @@ actor ThumbnailService {
     }
 
     /// Already-made thumbnail for `source` (memory or disk), without generating anything — for places that must not
-    /// start SMB work, like the file list inside the player while a video is streaming.
-    func cachedThumbnail(source: String) -> UIImage? {
+    /// start SMB work, like the file list inside the player while a video is streaming. Runs off the actor: a screen
+    /// of cells decodes its JPEGs in parallel instead of one after another behind thumbnail bookkeeping.
+    nonisolated func cachedThumbnail(source: String) async -> UIImage? {
+        let key = Self.key(source)
+        let memory = ThumbnailMemory.shared
+        if let cached = memory.images.object(forKey: key as NSString) { return cached }
+        guard let data = try? Data(contentsOf: Self.directory.appendingPathComponent(key + ".jpg")),
+              let image = Self.downsample(data, maxDimension: 800) else { return nil }
+        memory.remember(image, key: key)
+        return image
+    }
+
+    /// The moving-thumbnail frames already made for `source`, decoded off the actor.
+    nonisolated func cachedPreview(source: String) async -> [UIImage] {
+        let key = Self.key(source)
+        let memory = ThumbnailMemory.shared
+        if let cached = memory.previews.object(forKey: key as NSString) as? [UIImage] { return cached }
+        var frames: [UIImage] = []
+        for i in 0..<Self.previewPositions.count {
+            guard let data = try? Data(contentsOf: Self.directory.appendingPathComponent("\(key).p\(i).jpg")),
+                  let image = Self.downsample(data, maxDimension: 400) else { continue }
+            frames.append(image)
+        }
+        guard frames.count > 1 else { return [] }
+        memory.rememberPreview(frames, key: key)
+        return frames
+    }
+
+    private func cachedLocal(source: String) -> UIImage? {
         let key = cacheKey(source)
         if let cached = memoryCache.object(forKey: key as NSString) { return cached }
         if let onDisk = loadFromDisk(key) {
@@ -105,18 +135,19 @@ actor ThumbnailService {
     /// Thumbnail for an SMB video, taken by libVLC itself (`VLCSnapshotter`) over its own SMB2 module — works
     /// for every format VLC plays (MKV, AVI, HEVC...). One at a time: each is its own SMB session plus a decoder.
     private func makeSmbVideoThumbnail(source: String, host: String, path: String, screen: Bool) async -> UIImage? {
-        if let cached = cachedThumbnail(source: source) { return cached }
+        if let cached = cachedLocal(source: source) { return cached }
         let key = cacheKey(source)
         let noFrame = diskDirectory.appendingPathComponent(key + ".none")
         // A file libVLC could not take a frame from is not retried on every visit (the log showed the same file
         // re-attempted over and over, each time another SMB session hammering the server).
         if FileManager.default.fileExists(atPath: noFrame.path) { return nil }
+        await waitOutCooldown(host)
         await acquireSmbSlot(source: source, screen: screen)
         defer { releaseSmbSlot() }
         if Task.isCancelled { return nil }
         let busy = await Self.videoIsPlaying()
         if busy { return nil }
-        if let cached = cachedThumbnail(source: source) { return cached }
+        if let cached = cachedLocal(source: source) { return cached }
 
         let login = await SmbRegistry.shared.login(for: host)
         var snapshot: CGImage?
@@ -134,12 +165,15 @@ actor ThumbnailService {
         }
         guard let cgImage = snapshot else {
             PlaybackDiagnostics.append("thumb: VLC gave no frame for \(path)")
-            // Only remember it if nothing else was going on (a video starting mid-way can make it fail too).
+            let unstable = noteFailure(host)
+            // Only remember it if nothing else was going on (a video starting mid-way, the app in the background or
+            // the share dropping out make it fail too).
             let busyNow = await Self.videoIsPlaying()
             let active = await Self.appIsActive()
-            if !busyNow && active { FileManager.default.createFile(atPath: noFrame.path, contents: nil) }
+            if !busyNow && active && !unstable { FileManager.default.createFile(atPath: noFrame.path, contents: nil) }
             return nil
         }
+        failures[host] = nil
         let image = UIImage(cgImage: cgImage)
         remember(image, key: key)
         saveToDisk(image, key: key)
@@ -149,11 +183,11 @@ actor ThumbnailService {
     /// Thumbnail for a picture on an SMB share (bytes via `SmbImageLoader`, downsampled without decoding the full
     /// picture).
     private func makeSmbImageThumbnail(source: String, host: String, path: String, screen: Bool) async -> UIImage? {
-        if let cached = cachedThumbnail(source: source) { return cached }
+        if let cached = cachedLocal(source: source) { return cached }
         await acquireSmbSlot(source: source, screen: screen)
         defer { releaseSmbSlot() }
         if Task.isCancelled { return nil }
-        if let cached = cachedThumbnail(source: source) { return cached }
+        if let cached = cachedLocal(source: source) { return cached }
         guard let data = await SmbImageLoader.data(host: host, path: path, fallbackWidth: 640) else { return nil }
         return await imageThumbnail(source: source, data: data)
     }
@@ -161,7 +195,7 @@ actor ThumbnailService {
     /// Cover art embedded in a song (ID3/FLAC/MP4 tags...), read by libVLC's own parser — over its SMB2 module for
     /// network files. Songs without a cover get a marker file so they are not parsed again every time.
     private func makeAudioCover(source: String, screen: Bool) async -> UIImage? {
-        if let cached = cachedThumbnail(source: source) { return cached }
+        if let cached = cachedLocal(source: source) { return cached }
         let key = cacheKey(source)
         let noCover = diskDirectory.appendingPathComponent(key + ".none")
         if FileManager.default.fileExists(atPath: noCover.path) { return nil }
@@ -171,7 +205,7 @@ actor ThumbnailService {
         if Task.isCancelled { return nil }
         let busy = await Self.videoIsPlaying()
         if busy { return nil }
-        if let cached = cachedThumbnail(source: source) { return cached }
+        if let cached = cachedLocal(source: source) { return cached }
 
         let media: VLCMedia?
         if let (host, path) = SmbUri.parse(source) {
@@ -249,6 +283,7 @@ actor ThumbnailService {
         let task = Task { await make() }
         inflight[key] = task
         let result = await waitFor(task, key: key, screen: screen)
+        if inflight[key] == task, result != nil { ThumbnailEvents.shared.post(key) }
         inflight[key] = nil
         return result
     }
@@ -269,6 +304,8 @@ actor ThumbnailService {
     /// when the folder view goes away (task cancelled) or a video opens.
     func prefill(host: String, entries: [SmbEntry]) async {
         let queue = PrefillQueue(entries.filter { $0.kind != .other })
+        prefillQueue = queue
+        defer { if prefillQueue === queue { prefillQueue = nil } }
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<3 {
                 group.addTask {
@@ -285,9 +322,46 @@ actor ThumbnailService {
                 }
             }
         }
-        ThumbnailEvents.shared.changedSoon()
     }
 
+    /// The folder prefill in progress — `focus(path:)` steers it to where the user is looking.
+    private var prefillQueue: PrefillQueue?
+
+    /// A cell appeared: the prefill continues from there, in the direction the user is scrolling.
+    nonisolated func focus(path: String) {
+        Task { await self.prefillQueue?.focus(path) }
+    }
+
+
+    // MARK: - A share dropping out
+    //
+    // When the server or Wi-Fi drops out, every grab fails one after another — the last crash in the log happened in
+    // exactly such a run (proxy unreachable, SMB socket errors), with grabs piling onto a dead connection. Three
+    // failures on one host within 30 s pause its thumbnails for 20 s, and failures then are not taken as "this file
+    // has no picture".
+
+    private var failures: [String: [Date]] = [:]
+    private var cooldownUntil: [String: Date] = [:]
+
+    /// Records a failed grab; true if the host looks unstable right now.
+    private func noteFailure(_ host: String) -> Bool {
+        let now = Date()
+        var recent = (failures[host] ?? []).filter { now.timeIntervalSince($0) < 30 }
+        recent.append(now)
+        failures[host] = recent
+        if let until = cooldownUntil[host], until > now { return true }
+        guard recent.count >= 3 else { return false }
+        cooldownUntil[host] = now.addingTimeInterval(20)
+        failures[host] = nil
+        PlaybackDiagnostics.append("thumb: \(host) keeps failing — thumbnails paused for 20 s")
+        return true
+    }
+
+    private func waitOutCooldown(_ host: String) async {
+        while let until = cooldownUntil[host], until > Date(), !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: UInt64(max(0.5, until.timeIntervalSinceNow) * 1_000_000_000))
+        }
+    }
 
     // MARK: - SMB job slots (limit follows ThumbnailPolicy: 3 in fast mode, 1 otherwise)
 
@@ -429,7 +503,7 @@ actor ThumbnailService {
     /// does not turn into dozens of SMB sessions. Folders with nothing to show get a marker and keep the plain icon.
     private func makeFolderThumbnail(host: String, path: String, screen: Bool) async -> UIImage? {
         let source = "smbfolder://\(host)/\(path)"
-        if let cached = cachedThumbnail(source: source) { return cached }
+        if let cached = cachedLocal(source: source) { return cached }
         let key = cacheKey(source)
         let empty = diskDirectory.appendingPathComponent(key + ".none")
         if let date = (try? FileManager.default.attributesOfItem(atPath: empty.path))?[.modificationDate] as? Date,
@@ -444,7 +518,7 @@ actor ThumbnailService {
         var tiles: [UIImage] = []
         var missing: [SmbEntry] = []
         for entry in media where tiles.count < 4 {
-            if let existing = cachedThumbnail(source: "smb://\(host)/\(entry.path)") { tiles.append(existing) }
+            if let existing = cachedLocal(source: "smb://\(host)/\(entry.path)") { tiles.append(existing) }
             else { missing.append(entry) }
         }
         var made = 0
@@ -508,11 +582,12 @@ actor ThumbnailService {
 
     /// Loads already-made thumbnails for `sources` from disk into memory (decoded), so rows about to scroll into
     /// view show theirs at once. Disk only — never starts SMB work.
-    func warm(_ sources: [String]) {
-        for source in sources {
-            let key = cacheKey(source)
-            guard memoryCache.object(forKey: key as NSString) == nil, let image = loadFromDisk(key) else { continue }
-            remember(image, key: key)
+    nonisolated func warm(_ sources: [String]) async {
+        // Several at once, off the actor.
+        await withTaskGroup(of: Void.self) { group in
+            for source in sources {
+                group.addTask { _ = await self.cachedThumbnail(source: source) }
+            }
         }
     }
 
@@ -526,7 +601,7 @@ actor ThumbnailService {
     }
 
     /// Already-made frames for `source` (memory or disk), without generating anything.
-    func cachedPreview(source: String) -> [UIImage] {
+    private func cachedPreviewLocal(source: String) -> [UIImage] {
         let key = cacheKey(source)
         if let cached = previewCache.object(forKey: key as NSString) as? [UIImage] { return cached }
         var frames: [UIImage] = []
@@ -554,6 +629,7 @@ actor ThumbnailService {
         let task = Task { await self.makeSmbPreview(source: source, host: host, path: path, screen: screen) }
         previewInflight[source] = task
         let result = await waitFor(task, key: source, screen: screen)
+        if previewInflight[source] == task, !result.isEmpty { ThumbnailEvents.shared.post(source) }
         previewInflight[source] = nil
         return result
     }
@@ -561,7 +637,7 @@ actor ThumbnailService {
     private var previewInflight: [String: Task<[UIImage], Never>] = [:]
 
     private func makeSmbPreview(source: String, host: String, path: String, screen: Bool) async -> [UIImage] {
-        let existing = cachedPreview(source: source)
+        let existing = cachedPreviewLocal(source: source)
         if !existing.isEmpty { return existing }
         let key = cacheKey(source)
         let none = diskDirectory.appendingPathComponent(key + ".p.none")
@@ -677,6 +753,7 @@ actor ThumbnailService {
         let key = cacheKey(source)
         remember(image, key: key)
         saveToDisk(image, key: key)
+        ThumbnailEvents.shared.post(source)
     }
 
     /// Drops one entry's thumbnail (and its "no frame / no cover" marker) so it is made again.
@@ -717,14 +794,59 @@ private extension UIImage {
     }
 }
 
-/// Hands a folder's entries out one at a time to the prefill workers.
+/// Hands a folder's entries out to the prefill workers: from the row last seen on screen, in the direction the
+/// user is scrolling (down by default), then the rest — instead of always from the top of the folder.
 private actor PrefillQueue {
-    private var entries: [SmbEntry]
-    private var index = 0
-    init(_ entries: [SmbEntry]) { self.entries = entries }
+    private let entries: [SmbEntry]
+    private var done: Set<Int> = []
+    private var anchor = 0
+    private var downward = true
+    private let positions: [String: Int]
+
+    init(_ entries: [SmbEntry]) {
+        self.entries = entries
+        var positions: [String: Int] = [:]
+        for (i, entry) in entries.enumerated() { positions[entry.path] = i }
+        self.positions = positions
+    }
+
+    func focus(_ path: String) {
+        guard let index = positions[path] else { return }
+        downward = index >= anchor
+        anchor = index
+    }
+
     func next() -> SmbEntry? {
-        guard index < entries.count else { return nil }
-        defer { index += 1 }
+        guard done.count < entries.count else { return nil }
+        // Nearest not-yet-done entry ahead in the scroll direction (a few rows back count too), else anywhere.
+        let ahead = downward ? Array(anchor..<entries.count) + Array((0..<anchor).reversed())
+                             : Array((0...min(anchor, entries.count - 1)).reversed()) + Array((anchor + 1)..<max(anchor + 1, entries.count))
+        guard let index = ahead.first(where: { !done.contains($0) }) else { return nil }
+        done.insert(index)
         return entries[index]
+    }
+}
+
+/// The decoded thumbnails in memory — thread-safe (NSCache), shared by the actor and the off-actor readers.
+final class ThumbnailMemory: @unchecked Sendable {
+    static let shared = ThumbnailMemory()
+    let images = NSCache<NSString, UIImage>()
+    let previews = NSCache<NSString, NSArray>()
+
+    private init() {
+        // Bounded by bytes, not just count: 300 decoded 480px thumbnails alone could take >100MB, on top of libVLC.
+        images.countLimit = 200
+        images.totalCostLimit = 40 * 1024 * 1024
+        previews.totalCostLimit = 30 * 1024 * 1024
+    }
+
+    func remember(_ image: UIImage, key: String) {
+        let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+        images.setObject(image, forKey: key as NSString, cost: cost)
+    }
+
+    func rememberPreview(_ frames: [UIImage], key: String) {
+        let cost = frames.reduce(0) { $0 + Int($1.size.width * $1.size.height * 4) }
+        previews.setObject(frames as NSArray, forKey: key as NSString, cost: cost)
     }
 }

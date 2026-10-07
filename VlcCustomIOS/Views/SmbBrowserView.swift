@@ -11,6 +11,9 @@ struct SmbBrowserView: View {
     @State private var connection: SmbConnection?
     @State private var path = ""
     @State private var entries: [SmbEntry] = []
+    /// `entries` filtered by the search and sorted (folders first) — computed when one of those changes, not on
+    /// every redraw (a 1000-file folder was re-sorted many times a second while typing or as thumbnails arrived).
+    @State private var shownEntries: [SmbEntry] = []
     @State private var status: String?
     @State private var connecting = false
     @State private var loading = false
@@ -227,8 +230,19 @@ struct SmbBrowserView: View {
                                  onAddToPlaylist: { addingToPlaylist = $0 }, showsParentPath: true)
             }
         } else if let connection {
-            SmbFolderContent(host: connection.host, entries: displayedEntries, onOpen: open, onAddToPlaylist: { addingToPlaylist = $0 })
+            SmbFolderContent(host: connection.host, entries: shownEntries, onOpen: open, onAddToPlaylist: { addingToPlaylist = $0 })
+                // Pull down to read the folder again over SMB.
+                .refreshable { await load(force: true) }
+                .onAppear { recomputeShown() }
+                .onChange(of: entries) { _ in recomputeShown() }
+                .onChange(of: query) { _ in recomputeShown() }
+                .onChange(of: sort) { _ in recomputeShown() }
         }
+    }
+
+    private func recomputeShown() {
+        let next = displayedEntries
+        if next != shownEntries { shownEntries = next }
     }
 
     private func sortedGroups(_ list: [SmbEntry]) -> [SmbEntry] {
@@ -319,21 +333,36 @@ struct SmbBrowserView: View {
         await load()
     }
 
-    private func load() async {
+    /// Shows the folder's last listing at once (`SmbListingCache`), then the fresh one read over SMB replaces it if
+    /// anything changed. `force`: pull-to-refresh — wait for the fresh listing.
+    private func load(force: Bool = false) async {
         guard let connection else { return }
-        loading = true
-        do {
-            entries = try await connection.list(path: path)
+        let host = connection.host
+        let folder = path
+        if !force, let cached = await SmbListingCache.get(host: host, path: folder), folder == path {
+            entries = cached
+            recomputeShown()
             status = nil
-        } catch {
-            status = error.localizedDescription
+            loading = false
+        } else if !force {
+            loading = true
         }
-        loading = false
+        do {
+            let fresh = try await connection.list(path: folder)
+            guard folder == path else { return } // went elsewhere meanwhile
+            if fresh != entries { entries = fresh }
+            recomputeShown()
+            status = nil
+            SmbListingCache.put(host: host, path: folder, entries: fresh)
+        } catch {
+            if folder == path, entries.isEmpty || force { status = error.localizedDescription }
+        }
+        if folder == path { loading = false }
     }
 
     private func open(_ entry: SmbEntry) {
         guard let connection else { return }
-        let siblings = deepResults.map(sortedGroups) ?? displayedEntries
+        let siblings = deepResults.map(sortedGroups) ?? shownEntries
         switch SmbOpener.open(entry, siblings: siblings, host: connection.host, label: "SMB: \(connection.host)/\(path)") {
         case .folder(let newPath):
             cancelDeepSearch()

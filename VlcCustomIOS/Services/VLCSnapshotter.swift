@@ -123,7 +123,7 @@ final class VLCSnapshotter: @unchecked Sendable {
             opaque = Unmanaged.passRetained(sink).toOpaque()
             libvlc_video_set_callbacks(player, { opaque, planes in
                 let sink = Unmanaged<FrameSink>.fromOpaque(opaque!).takeUnretainedValue()
-                planes?.pointee = sink.buffer
+                planes?.pointee = sink.currentBuffer
                 return nil
             }, nil, { opaque, _ in
                 Unmanaged<FrameSink>.fromOpaque(opaque!).takeUnretainedValue().frameShown()
@@ -283,7 +283,16 @@ final class VLCSnapshotter: @unchecked Sendable {
 private final class FrameSink: @unchecked Sendable {
     let maxWidth: Int
     let minFrames: Int
-    private(set) var buffer: UnsafeMutableRawPointer?
+    private var buffer: UnsafeMutableRawPointer?
+    /// Buffers replaced by a format change: libVLC may still be writing a picture into one, so they are only freed
+    /// with the sink (freeing at once could crash a libVLC thread — the kind of crash seen while a share dropped).
+    private var retired: [UnsafeMutableRawPointer] = []
+
+    /// The buffer libVLC renders into (read from libVLC's thread).
+    var currentBuffer: UnsafeMutableRawPointer? {
+        condition.lock(); defer { condition.unlock() }
+        return buffer
+    }
     private var width = 0, height = 0
     /// The size libVLC decodes at (coded size, may include padding rows/columns).
     private var sourceWidth = 0, sourceHeight = 0
@@ -296,12 +305,17 @@ private final class FrameSink: @unchecked Sendable {
         self.minFrames = minFrames
     }
 
-    deinit { buffer?.deallocate() }
+    deinit {
+        buffer?.deallocate()
+        retired.forEach { $0.deallocate() }
+    }
 
     /// libVLC tells us the source size; we pick the output size (aspect kept) and chroma.
     func setup(chroma: UnsafeMutablePointer<CChar>?, width w: UnsafeMutablePointer<UInt32>?, height h: UnsafeMutablePointer<UInt32>?,
                pitches: UnsafeMutablePointer<UInt32>?, lines: UnsafeMutablePointer<UInt32>?) -> UInt32 {
         guard let chroma, let w, let h, let pitches, let lines, w.pointee > 0, h.pointee > 0 else { return 0 }
+        condition.lock()
+        defer { condition.unlock() }
         sourceWidth = Int(w.pointee); sourceHeight = Int(h.pointee)
         let scale = min(1, Double(maxWidth) / Double(w.pointee))
         width = max(2, Int(Double(w.pointee) * scale) & ~1)
@@ -311,7 +325,7 @@ private final class FrameSink: @unchecked Sendable {
         chroma[2] = CChar(UInt8(ascii: "B")); chroma[3] = CChar(UInt8(ascii: "A"))
         w.pointee = UInt32(width); h.pointee = UInt32(height)
         pitches[0] = UInt32(width * 4); lines[0] = UInt32(height)
-        buffer?.deallocate()
+        if let old = buffer { retired.append(old) }
         buffer = UnsafeMutableRawPointer.allocate(byteCount: width * height * 4, alignment: 64)
         return 1
     }

@@ -31,6 +31,8 @@ struct PlayerScreen: View {
     /// Rate to go back to when the press-and-hold 2× boost ends.
     @State private var speedBoostFrom: Float?
     @State private var showQueue = false
+    /// AI subtitles were on for the previous episode: they start on their own for this one once its length is known.
+    @State private var continueSubtitles = false
 
     private static let speeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
@@ -93,6 +95,22 @@ struct PlayerScreen: View {
 
             LiveStatusBadge(live: live)
 
+            if let offer = player.resumeOffer {
+                ResumeBanner(timeText: format(offer)) {
+                    player.acceptResume()
+                } onDismiss: {
+                    player.resumeOffer = nil
+                }
+                .padding(.bottom, showControls ? 240 : 40)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .transition(.opacity)
+                .task(id: offer) {
+                    // Offered for 8 seconds, then playback simply goes on from the start.
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    if player.resumeOffer == offer { withAnimation { player.resumeOffer = nil } }
+                }
+            }
+
             if showControls {
                 VStack(spacing: 0) {
                     // Top bar: close + file name only. All tools sit in the bottom panel as roomy 44pt round
@@ -112,7 +130,7 @@ struct PlayerScreen: View {
 
                     VStack(spacing: 14) {
                         HStack(spacing: 10) {
-                            PlayerTimeRow(clock: player.clock, seeking: seeking, sliderValue: sliderValue,
+                            PlayerTimeRow(clock: player.clock, live: live, seeking: seeking, sliderValue: sliderValue,
                                     onScrub: { fraction in
                                         seeking = true
                                         sliderValue = fraction
@@ -184,12 +202,36 @@ struct PlayerScreen: View {
         }
         .onDisappear {
             player.stop(); live.reset(); PlaybackActivity.shared.isBusy = false
+            LiveSubtitles.nextEpisode.reset()
+            Task { await WhisperEngine.shared.unloadAll() }
             OrientationLock.unlock()
         }
         .onChange(of: player.didReachEnd) { reached in if reached { playNextOrClose() } }
         // Another file in the same player (next in the folder, picked from the list): drop the previous one's
         // AI / translated subtitles.
-        .onChange(of: queue.current?.source) { source in live.reset(unlessFor: source) }
+        .onChange(of: queue.current?.source) { source in
+            let wasSpeech = live.mode == .speech && live.source != nil && live.source != source
+            // The next episode's background job stops here; what it made is on disk and picked up below.
+            LiveSubtitles.nextEpisode.reset()
+            live.reset(unlessFor: source)
+            if wasSpeech { continueSubtitles = true }
+        }
+        .onReceive(player.clock.$duration) { duration in
+            guard continueSubtitles, duration > 0, let source = queue.current?.source else { return }
+            continueSubtitles = false
+            startSpeech(on: live, source: source, durationMs: Int(duration))
+        }
+        // This episode's subtitles are complete: make the next episode's in the background.
+        .onReceive(live.$running.dropFirst()) { running in
+            guard !running, live.isComplete, LiveSubtitles.nextEpisode.source == nil,
+                  let next = queue.next, let (host, path) = SmbUri.parse(next.source) else { return }
+            Task {
+                guard let length = await MediaHeaderDuration.lengthMs(host: host, path: path),
+                      queue.next?.source == next.source, !LiveSubtitles.nextEpisode.running else { return }
+                PlaybackDiagnostics.append("asr: next episode in the background — \(next.name)")
+                startSpeech(on: LiveSubtitles.nextEpisode, source: next.source, durationMs: Int(length))
+            }
+        }
         .alert("Không phát được video", isPresented: $player.showError) {
             Button("Đóng", role: .cancel) {}
         } message: {
@@ -353,6 +395,15 @@ struct PlayerScreen: View {
         player.playbackRate = next
     }
 
+    /// Recognition with the settings this folder last used.
+    private func startSpeech(on target: LiveSubtitles, source: String, durationMs: Int) {
+        let settings = SpeechSettings.shared
+        settings.applyFolderPreferences(for: source)
+        target.start(source: source, durationMs: durationMs, modelSize: settings.modelSize.rawValue,
+                     language: settings.spokenLanguage, translateTo: settings.translateTo,
+                     dual: settings.dualSubtitles && settings.translateTo != nil)
+    }
+
     private func playNextOrClose() {
         if queue.moveNext() != nil { player.playCurrent() } else { close() }
     }
@@ -381,6 +432,14 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     let clock = PlaybackClock()
     @Published var didReachEnd = false
     @Published var showError = false
+    /// "Xem tiếp từ 12:34?": where this video was left off last time, offered for a few seconds after it opens.
+    @Published var resumeOffer: Int32?
+    private var lastLoggedState = -1
+    /// The file playing now (its position is saved when it changes, stops or the app leaves).
+    private var currentSource: String?
+    private var openedAt: Date?
+    private var lastPositionSave = Date.distantPast
+    private var warmedNext: String?
     @Published var deinterlaceOn = false
     /// Opening / buffering before the first frame: the player shows a spinner so a slow file does not look dead.
     @Published var isLoading = false
@@ -423,6 +482,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         resumeAfterBackground = (item, time, mediaPlayer.isActive)
         // Survives iOS closing the app in the background: the next launch reopens this video here.
         ResumeStore.saveVideo(source: item.source, timeMs: time)
+        savePosition()
         PlaybackDiagnostics.append("player: background — stopping at \(time)ms")
         playGeneration += 1
         VLCControl.stop(mediaPlayer)
@@ -464,11 +524,46 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         triedOtherRoute = false
         if let resume = AppNavigator.shared.pendingResumeMs, resume.source == item.source {
             AppNavigator.shared.pendingResumeMs = nil
+            resumeOffer = nil
             PlaybackDiagnostics.append("player: resuming after relaunch at \(resume.ms)ms")
             start(item, resumeAtMs: max(0, resume.ms - 2000))
             return
         }
+        resumeOffer = PositionStore.position(for: item.source)
         start(item)
+    }
+
+    /// "Xem tiếp": jump to where it was left off (a couple of seconds earlier, to pick the thread up again).
+    func acceptResume() {
+        guard let ms = resumeOffer else { return }
+        resumeOffer = nil
+        let target = max(0, ms - 2000)
+        let player = mediaPlayer
+        VLCControl.run { player.time = VLCTime(int: target) }
+    }
+
+    /// Saves where the current file is (see `PositionStore`).
+    func savePosition() {
+        guard let currentSource, duration > 0, time > 0 else { return }
+        PositionStore.save(source: currentSource, ms: time, durationMs: duration)
+    }
+
+    /// Near the end of a file, the next one in the list is read a little ahead (its header and first megabyte)
+    /// so the server has it ready and the next episode starts at once.
+    private func warmNextIfNeeded() {
+        guard duration > 60_000, time > duration - 45_000, let next = PlaybackQueue.shared.next,
+              warmedNext != next.source, let (host, path) = SmbUri.parse(next.source) else { return }
+        warmedNext = next.source
+        Task.detached(priority: .utility) {
+            guard let connection = await SmbRegistry.shared.getOrReconnect(host) else { return }
+            _ = await MediaHeaderDuration.lengthMs(host: host, path: path)
+            _ = try? await connection.readChunk(path: path, offset: 0, count: 1_048_576)
+            if let size = try? await connection.fileSize(path: path), size > 4_194_304 {
+                // MP4 index at the end (moov) — libVLC reads it right after the header.
+                _ = try? await connection.readChunk(path: path, offset: size - 524_288, count: 524_288)
+            }
+            PlaybackDiagnostics.append("player: next file warmed up (\(path.split(separator: "/").last ?? ""))")
+        }
     }
 
     /// "Phát bằng chế độ tương thích" / back to normal, from the player's ⋯ menu: switch route for this file,
@@ -488,6 +583,11 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     private func start(_ item: VideoItem, resumeAtMs: Int32? = nil) {
         fallbackWork?.cancel()
+        if currentSource != item.source {
+            savePosition()
+            currentSource = item.source
+        }
+        openedAt = Date()
         playGeneration += 1
         let generation = playGeneration
         isLoading = true
@@ -550,6 +650,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     func stop() {
+        savePosition()
         fallbackWork?.cancel()
         playGeneration += 1
         VLCControl.stop(mediaPlayer)
@@ -645,10 +746,18 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         DispatchQueue.main.async {
             self.isPlaying = self.mediaPlayer.isActive
             if self.mediaPlayer.state == .error || self.mediaPlayer.state == .ended { self.isLoading = false }
-            PlaybackDiagnostics.append("player: state=\(self.mediaPlayer.state.rawValue)")
+            // Only real changes: VLCKit repeats the same state (buffering…) dozens of times a second — 41,750 lines
+            // in one real log.
+            let state = self.mediaPlayer.state.rawValue
+            if state != self.lastLoggedState {
+                self.lastLoggedState = state
+                PlaybackDiagnostics.append("player: state=\(state)")
+            }
             PlayerTrace.last = "state \(self.mediaPlayer.state.rawValue) at \(self.time)ms"
             switch self.mediaPlayer.state {
-            case .ended: self.didReachEnd = true
+            case .ended:
+                if let source = self.currentSource { PositionStore.clear(source) }
+                self.didReachEnd = true
             case .error:
                 if let item = PlaybackQueue.shared.current { self.fallbackOrFail(item, reason: "VLC error") }
                 else { self.showError = true }
@@ -668,6 +777,17 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             // Length once per file (VLCKit keeps querying libVLC while it is unknown).
             if self.duration <= 0 { self.duration = self.mediaPlayer.media?.length.intValue ?? 0 }
             PlayerTrace.last = "time \(now)ms"
+            if let openedAt = self.openedAt, now > 0 {
+                self.openedAt = nil
+                PlaybackDiagnostics.append(String(format: "player: playing after %.1fs", Date().timeIntervalSince(openedAt)))
+            }
+            if Date().timeIntervalSince(self.lastPositionSave) > 15 {
+                self.lastPositionSave = Date()
+                self.savePosition()
+            }
+            // A resume offer only makes sense near the start.
+            if self.resumeOffer != nil, now > 20_000 { self.resumeOffer = nil }
+            self.warmNextIfNeeded()
             // Proof of actual playback in the log (every ~5s of media time), not just "state=playing".
             if self.time / 5000 != previous / 5000 || (previous == 0 && self.time > 0) {
                 PlaybackDiagnostics.append("player: time=\(self.time)ms / \(self.duration)ms")
@@ -860,6 +980,7 @@ final class PlaybackClock: ObservableObject {
 /// Elapsed / seek bar / total — the only part of the controls that changes several times a second.
 private struct PlayerTimeRow: View {
     @ObservedObject var clock: PlaybackClock
+    let live: LiveSubtitles
     let seeking: Bool
     let sliderValue: Double
     let onScrub: (Double) -> Void
@@ -869,6 +990,7 @@ private struct PlayerTimeRow: View {
         Text(Self.format(seeking ? Int32(sliderValue * Double(clock.duration)) : clock.time))
             .foregroundStyle(.white).font(.caption).monospacedDigit()
         SeekBar(progress: seeking ? sliderValue : clock.progress, onScrub: onScrub, onCommit: onCommit)
+            .overlay { SubtitleMarksBar(live: live).offset(y: 7).allowsHitTesting(false) }
         Text(Self.format(clock.duration)).foregroundStyle(.white).font(.caption).monospacedDigit()
     }
 
@@ -920,6 +1042,55 @@ private struct LiveStatusBadge: View {
                 Spacer()
             }
             .allowsHitTesting(false)
+        }
+    }
+}
+
+/// "Xem tiếp từ 12:34" / "Từ đầu" — shown over the video for a few seconds when it was watched before.
+private struct ResumeBanner: View {
+    let timeText: String
+    let onResume: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: onResume) {
+                Label("Xem tiếp từ \(timeText)", systemImage: "play.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .background(Capsule().fill(Color.accentColor))
+                    .foregroundStyle(.white)
+            }
+            Button(action: onDismiss) {
+                Text("Từ đầu").font(.subheadline)
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .background(Capsule().fill(Color.black.opacity(0.6)))
+                    .foregroundStyle(.white)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Under the seek bar: where AI subtitles already exist (blue) and lines still waiting for a translation (orange).
+private struct SubtitleMarksBar: View {
+    @ObservedObject var live: LiveSubtitles
+
+    var body: some View {
+        let marks = live.marks
+        if !marks.covered.isEmpty {
+            Canvas { context, size in
+                for span in marks.covered {
+                    let rect = CGRect(x: span.lowerBound * size.width, y: 0,
+                                      width: max(1, (span.upperBound - span.lowerBound) * size.width), height: size.height)
+                    context.fill(Path(rect), with: .color(Color.cyan.opacity(0.7)))
+                }
+                for spot in marks.untranslated {
+                    context.fill(Path(CGRect(x: spot * size.width, y: 0, width: 1.5, height: size.height)),
+                                 with: .color(.orange))
+                }
+            }
+            .frame(height: 3)
         }
     }
 }

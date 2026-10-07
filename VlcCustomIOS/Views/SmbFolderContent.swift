@@ -84,6 +84,7 @@ struct SmbImageThumbnailView: View {
     let width: CGFloat
     let height: CGFloat
     @State private var image: UIImage?
+    @State private var made = 0
     @ObservedObject private var events = ThumbnailEvents.shared
 
     var body: some View {
@@ -97,7 +98,8 @@ struct SmbImageThumbnailView: View {
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .task(id: "\(path)#\(events.version)") {
+        .onThumbnailMade("smb://\(host)/\(path)", $made)
+        .task(id: "\(path)#\(events.version)#\(made)") {
             image = await ThumbnailService.shared.smbImageThumbnail(source: "smb://\(host)/\(path)", host: host, path: path)
         }
     }
@@ -113,11 +115,15 @@ struct SmbFolderContent: View {
     var showsParentPath = false
     @ObservedObject private var librarySettings = LibrarySettings.shared
     @State private var optionsEntry: SmbEntry?
+    /// Row of each entry, for the prefetch (a linear search per appearing cell was O(n) in 1000-file folders).
+    @State private var positions: [String: Int] = [:]
 
     var body: some View {
         content
             // "Ưu tiên tạo thumbnail nhanh": make the whole folder's thumbnails ahead of the scroll.
-            .task(id: entries.map(\.path).joined(separator: "|")) {
+            // Cheap identity of the listing (joining 1000 paths on every redraw was not).
+            .task(id: "\(entries.count)|\(entries.first?.path ?? "")|\(entries.last?.path ?? "")") {
+                positions = Dictionary(entries.enumerated().map { ($1.path, $0) }, uniquingKeysWith: { first, _ in first })
                 // Remembered for the background pass (thumbnails of folders already visited).
                 if !showsParentPath, let first = entries.first {
                     ThumbnailBackfill.shared.visit(host: host, path: (first.path as NSString).deletingLastPathComponent)
@@ -186,7 +192,9 @@ struct SmbFolderContent: View {
     /// When a cell appears, warm the thumbnails of the next dozen entries (disk → memory), so scrolling on shows
     /// them immediately instead of blank boxes filling in.
     private func prefetch(after entry: SmbEntry) {
-        guard let index = entries.firstIndex(of: entry) else { return }
+        // The folder prefill follows where the user is looking.
+        ThumbnailService.shared.focus(path: entry.path)
+        guard let index = positions[entry.path] ?? entries.firstIndex(of: entry) else { return }
         let upcoming = entries[(index + 1)..<min(entries.count, index + 13)]
             .filter { $0.kind != .other }
             .map { $0.isDirectory ? "smbfolder://\(host)/\($0.path)" : "smb://\(host)/\($0.path)" }

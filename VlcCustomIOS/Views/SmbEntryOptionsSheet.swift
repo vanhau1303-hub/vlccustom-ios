@@ -1,16 +1,29 @@
 import SwiftUI
 import UIKit
+import Combine
 
-/// Bumped when thumbnails are dropped, so every thumbnail view reloads (their `.task(id:)` includes it).
+/// Thumbnail news for the cells.
+/// - `version`: bumped when thumbnails are dropped (regenerate, delete all) — every thumbnail view reloads.
+/// - `made`: one thumbnail (or its moving frames) just got made — only the cell showing that file reloads. Before,
+///   every few new thumbnails bumped `version`, reloading every cell on screen: stutter while scrolling, and moving
+///   thumbnails jumping back to their first frame.
 final class ThumbnailEvents: ObservableObject {
     static let shared = ThumbnailEvents()
     @Published private(set) var version = 0
+    let made = PassthroughSubject<String, Never>()
     private init() {}
     func changed() { version += 1 }
 
-    /// From background work: one refresh on the main thread.
-    func changedSoon() {
-        DispatchQueue.main.async { self.changed() }
+    /// From any thread: `source` (or "smbfolder://host/path") has a new thumbnail.
+    func post(_ source: String) {
+        DispatchQueue.main.async { self.made.send(source) }
+    }
+}
+
+extension View {
+    /// Bumps `counter` whenever `source`'s thumbnail is (re)made.
+    func onThumbnailMade(_ source: String, _ counter: Binding<Int>) -> some View {
+        onReceive(ThumbnailEvents.shared.made.filter { $0 == source }) { _ in counter.wrappedValue += 1 }
     }
 }
 

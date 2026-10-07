@@ -14,6 +14,7 @@ struct VideoThumbnailView: View {
     @ObservedObject private var events = ThumbnailEvents.shared
     @AppStorage(ThumbnailPolicy.animatedKey) private var animated = false
     @ObservedObject private var forced = ForcedThumbnails.shared
+    @State private var made = 0
 
     var body: some View {
         ZStack {
@@ -42,7 +43,8 @@ struct VideoThumbnailView: View {
         }
         // Thumbnail động: only while the cell is on screen (the task stops when it scrolls away), and only once its
         // normal thumbnail exists — the frames are made after it, never while a video is open.
-        .task(id: "\(source)#\(events.version)#\(animated)#\(image != nil)") {
+        .onThumbnailMade(source, $made)
+        .task(id: "\(source)#\(events.version)#\(made)#\(animated)#\(image != nil)") {
             frames = []
             frameIndex = 0
             guard animated, image != nil, let (host, path) = SmbUri.parse(source) else { return }
@@ -58,7 +60,7 @@ struct VideoThumbnailView: View {
                 withAnimation(.easeInOut(duration: 0.35)) { frameIndex = (frameIndex + 1) % loaded.count }
             }
         }
-        .task(id: "\(source)#\(events.version)") {
+        .task(id: "\(source)#\(events.version)#\(made)") {
             image = await ThumbnailService.shared.cachedThumbnail(source: source)
             // While a video is streaming, only show thumbnails that already exist — generating one is another SMB
             // session + decoder competing with playback.
@@ -173,6 +175,7 @@ struct AudioCoverView: View {
     let size: CGFloat
     var width: CGFloat?
     @State private var cover: UIImage?
+    @State private var made = 0
     @ObservedObject private var activity = PlaybackActivity.shared
     @ObservedObject private var events = ThumbnailEvents.shared
 
@@ -187,7 +190,8 @@ struct AudioCoverView: View {
         }
         .frame(width: width ?? size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .task(id: "\(source)#\(events.version)") {
+        .onThumbnailMade(source, $made)
+        .task(id: "\(source)#\(events.version)#\(made)") {
             cover = await ThumbnailService.shared.cachedThumbnail(source: source)
             guard cover == nil, !activity.isBusy else { return }
             cover = await ThumbnailService.shared.audioCover(source: source)
@@ -203,6 +207,7 @@ struct SmbFolderThumbnailView: View {
     let width: CGFloat
     let height: CGFloat
     @State private var mosaic: UIImage?
+    @State private var made = 0
     @ObservedObject private var activity = PlaybackActivity.shared
     @ObservedObject private var events = ThumbnailEvents.shared
 
@@ -223,7 +228,8 @@ struct SmbFolderThumbnailView: View {
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .task(id: "\(path)#\(events.version)") {
+        .onThumbnailMade("smbfolder://\(host)/\(path)", $made)
+        .task(id: "\(path)#\(events.version)#\(made)") {
             mosaic = await ThumbnailService.shared.cachedThumbnail(source: "smbfolder://\(host)/\(path)")
             guard mosaic == nil, !activity.isBusy else { return }
             mosaic = await ThumbnailService.shared.folderThumbnail(host: host, path: path)

@@ -24,6 +24,14 @@ actor WhisperEngine {
         }
     }
 
+    /// Lets the loaded models go (the player closed): Turbo alone holds ~630 MB, and an app holding that much in the
+    /// background is the first one iOS kills — coming back then started from the home screen.
+    func unloadAll() {
+        guard !loads.isEmpty else { return }
+        loads = [:]
+        PlaybackDiagnostics.append("asr: models unloaded")
+    }
+
     /// Starts loading a model that was already downloaded before, so it is ready by the time recognition starts.
     /// Never triggers a first download (hundreds of MB) by itself.
     func preloadIfDownloaded(model: String) async {

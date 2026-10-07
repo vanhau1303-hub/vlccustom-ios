@@ -82,6 +82,30 @@ private struct Coverage {
 @MainActor
 final class LiveSubtitles: ObservableObject {
     static let shared = LiveSubtitles()
+    /// Makes the next episode's subtitles in the background once the current one's are done (recognition only —
+    /// translation, possibly paid, waits until that episode is actually watched).
+    static let nextEpisode = LiveSubtitles(translates: false)
+
+    init(translates: Bool = true) {
+        self.translates = translates
+    }
+
+    /// False for `nextEpisode`: recognized lines stay queued (saved) for translation.
+    private let translates: Bool
+
+    enum Mode { case speech, existing }
+    /// What the current subtitles are: recognized from the audio, or a track / file translated.
+    private(set) var mode: Mode?
+
+    /// For the marks under the seek bar: the stretches already recognized and where lines still wait for their
+    /// translation, as fractions of the video.
+    @Published private(set) var marks = SubtitleMarks()
+    private var marksDurationMs = 0
+
+    /// Everything recognized (nothing left to do in this video).
+    var isComplete: Bool {
+        mode == .speech && marksDurationMs > 0 && coverage.nextGap(from: 0, limit: marksDurationMs) == nil
+    }
 
     @Published var status: String?
     @Published var errorMessage: String?
@@ -124,6 +148,8 @@ final class LiveSubtitles: ObservableObject {
         stop()
         errorMessage = nil
         self.source = source
+        mode = .speech
+        marksDurationMs = durationMs
 
         let key = Self.cacheKey(source: source, language: language,
                                 translateTo: translateTo.map { $0 + "|" + SpeechSettings.shared.translatorSignature }, dual: dual)
@@ -159,6 +185,8 @@ final class LiveSubtitles: ObservableObject {
         stop()
         errorMessage = nil
         self.source = source
+        mode = .existing
+        marksDurationMs = max(lines.last?.endMs ?? 0, 1)
         let key = Self.cacheKey(source: source + "#" + optionID, language: nil,
                                 translateTo: translateTo.map { $0 + "|" + SpeechSettings.shared.translatorSignature }, dual: dual)
         let dir = Self.subsDirectory()
@@ -221,6 +249,9 @@ final class LiveSubtitles: ObservableObject {
         pendingURL = nil
         errorMessage = nil
         self.source = nil
+        mode = nil
+        marks = SubtitleMarks()
+        marksDurationMs = 0
     }
 
     /// The cue that should be on screen at `ms` (with a little slack either side, like the Android overlay).
@@ -578,7 +609,7 @@ final class LiveSubtitles: ObservableObject {
 
     /// Keeps retrying the queue in the background — even after recognition finished — until it is empty.
     private func startDrainingIfNeeded() {
-        guard drainTask == nil, translateTo != nil, !pending.isEmpty else { return }
+        guard translates, drainTask == nil, translateTo != nil, !pending.isEmpty else { return }
         drainTask = Task { [weak self] in
             while let self, !Task.isCancelled, !self.pending.isEmpty {
                 let wait = max(0.2, self.pausedUntil.map { $0.timeIntervalSinceNow } ?? 0.2)
@@ -627,9 +658,21 @@ final class LiveSubtitles: ObservableObject {
     }
 
     private func persist() {
+        updateMarks()
         guard let subtitleURL, let coverageURL else { return }
         Srt.write(cues, to: subtitleURL)
         try? coverage.serialized().write(to: coverageURL, atomically: true, encoding: .utf8)
+    }
+
+    private func updateMarks() {
+        guard marksDurationMs > 0 else { marks = SubtitleMarks(); return }
+        let total = Double(marksDurationMs)
+        let covered: [ClosedRange<Double>] = mode == .existing
+            ? [0...1]
+            : coverage.spans.map { min(1, Double($0.0) / total)...min(1, Double($0.1) / total) }
+        let waiting = pending.keys.sorted().map { min(1, Double($0) / total) }
+        let next = SubtitleMarks(covered: covered, untranslated: waiting)
+        if next != marks { marks = next }
     }
 
     private func rms(_ samples: [Float]) -> Float {
@@ -662,4 +705,10 @@ final class LiveSubtitles: ObservableObject {
         let digest = SHA256.hash(data: Data(raw.utf8))
         return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
+}
+
+/// Recognized stretches and lines still waiting for a translation, as fractions of the video (0…1).
+struct SubtitleMarks: Equatable {
+    var covered: [ClosedRange<Double>] = []
+    var untranslated: [Double] = []
 }

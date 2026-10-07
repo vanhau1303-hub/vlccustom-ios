@@ -36,6 +36,7 @@ enum PlaybackDiagnostics {
 
     static func clear() {
         writeQueue.async {
+            try? FileManager.default.removeItem(at: oldURL)
             do { try handle?.truncate(atOffset: 0) } catch { reopen() }
         }
     }
@@ -68,7 +69,9 @@ enum PlaybackDiagnostics {
         let copy = FileManager.default.temporaryDirectory
             .appendingPathComponent("vlc_diagnostics_\(formatter.string(from: Date())).log")
         try? FileManager.default.removeItem(at: copy)
-        try? FileManager.default.copyItem(at: logURL, to: copy)
+        var data = (try? Data(contentsOf: oldURL)) ?? Data()
+        data.append((try? Data(contentsOf: logURL)) ?? Data())
+        try? data.write(to: copy)
         return copy
     }
 
@@ -87,9 +90,7 @@ enum PlaybackDiagnostics {
         writesSinceSizeCheck += 1
         if writesSinceSizeCheck >= 2_000 {
             writesSinceSizeCheck = 0
-            if let size = try? handle?.offset(), size > 20_000_000 {
-                try? handle?.truncate(atOffset: 0)
-            }
+            if let size = try? handle?.offset(), size > maxBytes { rotate() }
         }
     }
 
@@ -105,10 +106,24 @@ enum PlaybackDiagnostics {
         return try? FileHandle(forWritingTo: logURL)
     }
 
+    /// 8 MB per file, the previous file kept as `.old` (the shared log is old + current): it used to grow to 20 MB
+    /// and then start again from nothing, losing what led up to a problem.
+    private static let maxBytes: UInt64 = 8_000_000
+    private static var oldURL: URL { logURL.appendingPathExtension("old") }
+
+    private static func rotate() {
+        try? handle?.close()
+        handle = nil
+        try? FileManager.default.removeItem(at: oldURL)
+        try? FileManager.default.moveItem(at: logURL, to: oldURL)
+        handle = openHandle()
+    }
+
     private static func trimIfTooBig() {
         if let size = (try? FileManager.default.attributesOfItem(atPath: logURL.path))?[.size] as? NSNumber,
-           size.int64Value > 20_000_000 {
-            try? FileManager.default.removeItem(at: logURL)
+           size.uint64Value > maxBytes {
+            try? FileManager.default.removeItem(at: oldURL)
+            try? FileManager.default.moveItem(at: logURL, to: oldURL)
         }
     }
 
@@ -123,7 +138,13 @@ enum PlaybackDiagnostics {
 private final class AppVLCLogger: NSObject, VLCLogging {
     var level: VLCLogLevel = .info
 
+    /// libVLC lines that say nothing (seen tens of thousands of times in real logs): option names this build does
+    /// not have, and the cancelled reads every seek / stop produces.
+    private static let noise = ["does not exist", "vlc_poll_i11e interrupted", "STATUS_CANCELLED",
+                                "cannot add user audio meter", "Format change is not allowed"]
+
     func handleMessage(_ message: String, logLevel level: VLCLogLevel, context: VLCLogContext?) {
+        if Self.noise.contains(where: { message.contains($0) }) { return }
         let tag: String
         switch level {
         case .error: tag = "ERR"

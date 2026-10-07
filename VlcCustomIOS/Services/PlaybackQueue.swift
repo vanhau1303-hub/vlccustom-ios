@@ -12,6 +12,7 @@ final class PlaybackQueue: ObservableObject {
     var current: VideoItem? { items.indices.contains(index) ? items[index] : nil }
     var hasNext: Bool { index < items.count - 1 }
     var hasPrevious: Bool { index > 0 }
+    var next: VideoItem? { items.indices.contains(index + 1) ? items[index + 1] : nil }
 
     func start(_ items: [VideoItem], index: Int, label: String = "") {
         self.items = items

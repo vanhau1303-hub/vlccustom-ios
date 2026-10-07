@@ -17,7 +17,7 @@ struct VideoItem: Identifiable, Hashable {
 }
 
 /// One entry (file or folder) in an SMB directory listing.
-struct SmbEntry: Identifiable, Hashable {
+struct SmbEntry: Identifiable, Hashable, Codable {
     var id: String { path }
     let name: String
     /// Relative to the share, e.g. "Movies/Trip" (share name is the first component).

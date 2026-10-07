@@ -65,7 +65,9 @@ struct SpeechSubtitleDialog: View {
                 }
                 Section("Mô hình nhận dạng") {
                     Picker("Kích thước mô hình", selection: $settings.modelSize) {
-                        ForEach(WhisperModelSize.allCases) { size in Text(size.label).tag(size) }
+                        ForEach(WhisperModelSize.allCases) { size in
+                            Text(size == SpeechSettings.recommendedModel ? size.label + " · đề xuất cho máy này" : size.label).tag(size)
+                        }
                     }
                     Text("Tải qua Internet ở lần dùng đầu tiên cho mỗi kích thước, các lần sau dùng lại không cần mạng.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -160,6 +162,8 @@ struct SpeechSubtitleDialog: View {
             }
         }
         .presentationDetents([.medium, .large])
+        // The choices last used for this folder (a series): language, translator, style, model.
+        .onAppear { settings.applyFolderPreferences(for: source) }
         // Load an already-downloaded model while the user is still picking options.
         .task(id: settings.modelSize) {
             await WhisperEngine.shared.preloadIfDownloaded(model: settings.modelSize.rawValue)
@@ -215,6 +219,7 @@ struct SpeechSubtitleDialog: View {
                 let lines = try await ExistingSubtitles.load(option, host: host, videoPath: path) { fraction in
                     DispatchQueue.main.async { loadProgress = fraction }
                 }
+                settings.saveFolderPreferences(for: source)
                 live.startFromExisting(source: source, optionID: option.id, lines: lines,
                                        translateTo: settings.translateTo,
                                        dual: settings.dualSubtitles && settings.translateTo != nil)
@@ -229,6 +234,7 @@ struct SpeechSubtitleDialog: View {
     }
 
     private func start() {
+        settings.saveFolderPreferences(for: source)
         live.start(
             source: source,
             durationMs: durationMs,

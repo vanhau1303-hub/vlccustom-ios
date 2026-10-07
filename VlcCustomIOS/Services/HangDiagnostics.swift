@@ -88,7 +88,15 @@ final class MainThreadWatchdog: @unchecked Sendable {
         DispatchQueue.main.async { [self] in
             lock.lock(); lastPong = Date(); lock.unlock()
         }
+        let scheduled = Date().addingTimeInterval(1)
         queue.asyncAfter(deadline: .now() + 1) { [self] in
+            // The watchdog itself ran late: the whole app was suspended (in the background), not the main thread
+            // stuck. Those "stalls" of minutes or hours filled the log with false alarms.
+            if Date().timeIntervalSince(scheduled) > 2 {
+                lock.lock(); lastPong = Date(); stalledSince = nil; lock.unlock()
+                tick()
+                return
+            }
             lock.lock()
             let silence = Date().timeIntervalSince(lastPong)
             let since = stalledSince
