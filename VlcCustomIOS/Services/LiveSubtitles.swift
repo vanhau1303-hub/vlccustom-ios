@@ -117,6 +117,7 @@ final class LiveSubtitles: ObservableObject {
     private var dual = false
     private var pausedUntil: Date?
     private var backoffSeconds: Double = 60
+    private var lastTranslationError: String?
     private var drainTask: Task<Void, Never>?
 
     func start(source: String, durationMs: Int, modelSize: String, language: String?, translateTo: String?, dual: Bool) {
@@ -124,7 +125,8 @@ final class LiveSubtitles: ObservableObject {
         errorMessage = nil
         self.source = source
 
-        let key = Self.cacheKey(source: source, language: language, translateTo: translateTo, dual: dual)
+        let key = Self.cacheKey(source: source, language: language,
+                                translateTo: translateTo.map { $0 + "|" + SpeechSettings.shared.translatorSignature }, dual: dual)
         let dir = Self.subsDirectory()
         let subtitleURL = dir.appendingPathComponent("asr_\(key).srt")
         let coverageURL = dir.appendingPathComponent("asr_\(key).cov")
@@ -157,7 +159,8 @@ final class LiveSubtitles: ObservableObject {
         stop()
         errorMessage = nil
         self.source = source
-        let key = Self.cacheKey(source: source + "#" + optionID, language: nil, translateTo: translateTo, dual: dual)
+        let key = Self.cacheKey(source: source + "#" + optionID, language: nil,
+                                translateTo: translateTo.map { $0 + "|" + SpeechSettings.shared.translatorSignature }, dual: dual)
         let dir = Self.subsDirectory()
         subtitleURL = dir.appendingPathComponent("sub_\(key).srt")
         coverageURL = dir.appendingPathComponent("sub_\(key).cov")
@@ -488,8 +491,12 @@ final class LiveSubtitles: ObservableObject {
 
     /// Translates queued lines in batches (one request for up to `batchSize` lines, instead of one per line),
     /// nearest to the playhead first, unless the service asked us to wait.
-    private func translatePendingNow(batchSize: Int = 12) async {
+    private func translatePendingNow() async {
         guard let translateTo, !pending.isEmpty else { return }
+        // Claude takes bigger batches (it returns one line per line, and sees more context); Google: 12 / 900.
+        let claude = SpeechSettings.shared.useClaude
+        let batchSize = claude ? 40 : 12
+        let maxChars = claude ? 4000 : 900
         if let pausedUntil, pausedUntil > Date() { updateTranslationNote(); return }
         let playhead = playheadProvider?() ?? 0
         // Ahead of the playhead first (closest first), then whatever lies behind it.
@@ -504,7 +511,7 @@ final class LiveSubtitles: ObservableObject {
         var chars = 0
         for key in keys {
             let length = pending[key]?.count ?? 0
-            if !picked.isEmpty && (picked.count >= batchSize || chars + length > 900) { break }
+            if !picked.isEmpty && (picked.count >= batchSize || chars + length > maxChars) { break }
             picked.append(key)
             chars += length + 1
         }
@@ -512,15 +519,18 @@ final class LiveSubtitles: ObservableObject {
         let originals = batch.compactMap { pending[$0] }
         guard originals.count == batch.count else { return }
         do {
-            let translations = try await translateBatch(originals, to: translateTo)
+            let translations = try await translateBatch(originals, to: translateTo, firstStart: batch.first ?? 0)
             for (start, (original, translated)) in zip(batch, zip(originals, translations)) {
                 apply(translated, original: original, to: start)
                 pending[start] = nil
             }
             backoffSeconds = 60
+            lastTranslationError = nil
         } catch {
-            // Out of quota or offline: keep the lines queued and come back later, backing off up to 15 minutes.
-            let rateLimited = (error as? SubtitleTranslator.TranslateError)?.isRateLimited ?? false
+            // Out of quota, offline or a key problem: keep the lines queued and come back later, backing off.
+            let rateLimited = (error as? SubtitleTranslator.TranslateError)?.isRateLimited
+                ?? (error as? ClaudeTranslator.TranslateError)?.isRateLimited ?? false
+            lastTranslationError = error.localizedDescription
             PlaybackDiagnostics.append("translate: \(error.localizedDescription) — retry in \(Int(backoffSeconds))s")
             pausedUntil = Date().addingTimeInterval(backoffSeconds)
             backoffSeconds = min(rateLimited ? backoffSeconds * 2 : backoffSeconds * 1.5, 600)
@@ -532,9 +542,30 @@ final class LiveSubtitles: ObservableObject {
 
     /// One request for the whole batch (see `SubtitleTranslator.translateLines`). The source language is the one
     /// picked in the dialog, otherwise Google detects it ("auto") — never Whisper's guess, which can be wrong.
-    private func translateBatch(_ lines: [String], to target: String) async throws -> [String] {
-        try await SubtitleTranslator.translateLines(lines, from: sourceLanguage ?? "auto", to: target,
-                                                    serverURL: SpeechSettings.shared.libreTranslateServer)
+    private func translateBatch(_ lines: [String], to target: String, firstStart: Int) async throws -> [String] {
+        let settings = SpeechSettings.shared
+        if settings.useClaude {
+            let context = cues.filter { $0.startMs < firstStart }.suffix(6).map { $0.text.replacingOccurrences(of: "\n", with: " ") }
+            return try await claudeBatch(lines, context: Array(context), to: target,
+                                         model: settings.claudeModel, style: settings.translationStyle)
+        }
+        return try await SubtitleTranslator.translateLines(lines, from: sourceLanguage ?? "auto", to: target,
+                                                           serverURL: settings.libreTranslateServer)
+    }
+
+    /// Claude, with the few lines shown just before as context; a batch that comes back with the wrong number of
+    /// lines is split in two and tried again.
+    private func claudeBatch(_ lines: [String], context: [String], to target: String, model: ClaudeTranslator.Model,
+                             style: ClaudeTranslator.Style) async throws -> [String] {
+        do {
+            return try await ClaudeTranslator.translate(lines, context: context, to: target, model: model, style: style)
+        } catch let error as ClaudeTranslator.TranslateError where error.isLineCountMismatch && lines.count > 1 {
+            let half = lines.count / 2
+            let first = try await claudeBatch(Array(lines[..<half]), context: context, to: target, model: model, style: style)
+            let second = try await claudeBatch(Array(lines[half...]), context: Array((context + lines[..<half]).suffix(6)),
+                                               to: target, model: model, style: style)
+            return first + second
+        }
     }
 
     private func apply(_ translated: String, original: String, to start: Int) {
@@ -564,7 +595,8 @@ final class LiveSubtitles: ObservableObject {
         if let pausedUntil, pausedUntil > Date() {
             let formatter = DateFormatter()
             formatter.dateFormat = "HH:mm"
-            translationNote = "Còn \(pending.count) câu chưa dịch (dịch vụ tạm hết lượt) — tự dịch tiếp lúc \(formatter.string(from: pausedUntil))"
+            let reason = lastTranslationError ?? "dịch vụ tạm hết lượt"
+            translationNote = "Còn \(pending.count) câu chưa dịch (\(reason)) — tự dịch tiếp lúc \(formatter.string(from: pausedUntil))"
         } else {
             translationNote = "Đang dịch… còn \(pending.count) câu"
         }

@@ -15,6 +15,8 @@ struct SpeechSubtitleDialog: View {
     @State private var loadingOption: String?
     @State private var loadProgress: Double = 0
     @State private var existingError: String?
+    @State private var apiKey = ClaudeTranslator.apiKey
+    @State private var keyStatus: String?
 
     var body: some View {
         NavigationStack {
@@ -79,9 +81,57 @@ struct SpeechSubtitleDialog: View {
                     }
                     if settings.translateTo != nil {
                         Toggle("Hiện song ngữ (gốc + dịch)", isOn: $settings.dualSubtitles)
-                        TextField("Máy chủ LibreTranslate (trống = Google)", text: $settings.libreTranslateServer)
-                            .textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
-                            .keyboardType(.URL)
+                    }
+                }
+                if settings.translateTo != nil {
+                    Section {
+                        Picker("Dịch bằng", selection: $settings.useClaude) {
+                            Text("Google (miễn phí)").tag(false)
+                            Text("Claude AI (API key riêng)").tag(true)
+                        }
+                        if settings.useClaude {
+                            Picker("Mô hình", selection: $settings.claudeModel) {
+                                ForEach(ClaudeTranslator.Model.allCases) { Text($0.label).tag($0) }
+                            }
+                            Picker("Phong cách", selection: $settings.translationStyle) {
+                                ForEach(ClaudeTranslator.Style.allCases) { Text($0.label).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            SecureField("API key (sk-ant-…)", text: $apiKey)
+                                .autocorrectionDisabled().textInputAutocapitalization(.never)
+                                .onSubmit { ClaudeTranslator.apiKey = apiKey }
+                            HStack {
+                                Button("Lưu & kiểm tra key") {
+                                    ClaudeTranslator.apiKey = apiKey
+                                    keyStatus = "Đang kiểm tra…"
+                                    Task { keyStatus = await ClaudeTranslator.check(model: settings.claudeModel) }
+                                }
+                                .disabled(apiKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                                Spacer()
+                                if !ClaudeTranslator.apiKey.isEmpty {
+                                    Button("Xoá key", role: .destructive) {
+                                        ClaudeTranslator.apiKey = ""
+                                        apiKey = ""
+                                        keyStatus = nil
+                                    }
+                                }
+                            }
+                            .buttonStyle(.borderless)
+                            if let keyStatus {
+                                Text(keyStatus).font(.footnote).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        } else {
+                            TextField("Máy chủ LibreTranslate (trống = Google)", text: $settings.libreTranslateServer)
+                                .textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
+                                .keyboardType(.URL)
+                        }
+                    } header: {
+                        Text("Cách dịch")
+                    } footer: {
+                        if settings.useClaude {
+                            Text("Tạo key ở console.anthropic.com (trả trước). Một tập phim ~22 phút tốn khoảng 0,3 USD với Opus 5.5, 0,15 USD với Sonnet 5.5, 0,07 USD với Haiku 4.5 (ước tính). Key lưu trong Keychain của máy. Đổi mô hình / phong cách thì phụ đề được dịch lại.")
+                        }
                     }
                 }
                 if let status = live.status {
