@@ -33,6 +33,21 @@ private struct Coverage {
         spans = merged
     }
 
+    /// Takes `start..<end` out again (that stretch is recognized once more).
+    mutating func unmark(_ start: Int, _ end: Int) {
+        guard end > start else { return }
+        var result: [(Int, Int)] = []
+        for span in spans {
+            if span.1 <= start || span.0 >= end {
+                result.append(span)
+            } else {
+                if span.0 < start { result.append((span.0, start)) }
+                if span.1 > end { result.append((end, span.1)) }
+            }
+        }
+        spans = result
+    }
+
     /// The earliest millisecond not yet covered — always resume from the first gap, so a partially generated
     /// transcript picks up where it left off regardless of where playback currently is.
     func firstGap(limit: Int) -> Int {
@@ -252,9 +267,13 @@ final class LiveSubtitles: ObservableObject {
         }
         var prefetched: (start: Int, length: Int, task: Task<[Float], Error>)?
         var lastEnd: Int?
-        // Detected once, then fixed: auto-detect re-ran language detection on every window (extra work, and the
-        // occasional window "detected" as another language).
+        // "Tự động nhận diện": every window detects its own language until enough speech agrees on one, then that
+        // language is fixed for the rest of the video. Locking on the very first window was wrong whenever it was
+        // the opening music — Family Guy's intro came out as Korean, and every later window was then "transcribed"
+        // into Korean. Windows recognized in another language before the lock are done again.
         var spoken = language
+        var votes: [String: Int] = [:]
+        var windowLanguages: [(start: Int, end: Int, language: String)] = []
 
         while running, !Task.isCancelled {
             // Always work where the viewer is: the first gap at (slightly before) the playhead — a seek moves the
@@ -319,10 +338,28 @@ final class LiveSubtitles: ObservableObject {
                                                   Self.clock(cursor), length / 1000,
                                                   decodeStart.timeIntervalSince(waitStart), Date().timeIntervalSince(decodeStart),
                                                   results.count))
-                if spoken == nil, let detected = results.first(where: { !$0.segments.isEmpty })?.language,
-                   !detected.isEmpty {
-                    spoken = detected
-                    if sourceLanguage == nil { sourceLanguage = detected }
+                if spoken == nil {
+                    var windowVotes: [String: Int] = [:]
+                    for result in results where !result.language.isEmpty {
+                        let chars = result.segments.reduce(0) { $0 + $1.text.count }
+                        windowVotes[result.language, default: 0] += chars
+                    }
+                    for (lang, chars) in windowVotes { votes[lang, default: 0] += chars }
+                    if let windowLang = windowVotes.max(by: { $0.value < $1.value })?.key {
+                        windowLanguages.append((cursor, cursor + length, windowLang))
+                    }
+                    let total = votes.values.reduce(0, +)
+                    if total >= 300, let top = votes.max(by: { $0.value < $1.value }), Double(top.value) / Double(total) >= 0.6 {
+                        spoken = top.key
+                        PlaybackDiagnostics.append("asr: language \(top.key) (\(Int(Double(top.value) / Double(total) * 100))% of \(total) chars)")
+                        // Earlier windows that came out in another language: drop them and recognize them again.
+                        for window in windowLanguages where window.language != top.key {
+                            cues.removeAll { $0.startMs >= window.start && $0.startMs < window.end }
+                            for key in pending.keys where key >= window.start && key < window.end { pending[key] = nil }
+                            coverage.unmark(window.start, window.end)
+                        }
+                        windowLanguages = []
+                    }
                 }
 
                 // Where the extracted audio really starts. libVLC's :start-time lands on the keyframe before the
@@ -451,7 +488,7 @@ final class LiveSubtitles: ObservableObject {
 
     /// Translates queued lines in batches (one request for up to `batchSize` lines, instead of one per line),
     /// nearest to the playhead first, unless the service asked us to wait.
-    private func translatePendingNow(batchSize: Int = 12) async {
+    private func translatePendingNow(batchSize: Int = 30) async {
         guard let translateTo, !pending.isEmpty else { return }
         if let pausedUntil, pausedUntil > Date() { updateTranslationNote(); return }
         let playhead = playheadProvider?() ?? 0
@@ -461,7 +498,16 @@ final class LiveSubtitles: ObservableObject {
             if aAhead != bAhead { return aAhead }
             return abs(a - playhead) < abs(b - playhead)
         }
-        let batch = Array(keys.prefix(batchSize)).sorted()
+        // Up to `batchSize` lines but no more than ~1500 characters (the request is a URL).
+        var picked: [Int] = []
+        var chars = 0
+        for key in keys {
+            let length = pending[key]?.count ?? 0
+            if !picked.isEmpty && (picked.count >= batchSize || chars + length > 1500) { break }
+            picked.append(key)
+            chars += length + 1
+        }
+        let batch = picked.sorted()
         let originals = batch.compactMap { pending[$0] }
         guard originals.count == batch.count else { return }
         do {
@@ -476,29 +522,18 @@ final class LiveSubtitles: ObservableObject {
             let rateLimited = (error as? SubtitleTranslator.TranslateError)?.isRateLimited ?? false
             PlaybackDiagnostics.append("translate: \(error.localizedDescription) — retry in \(Int(backoffSeconds))s")
             pausedUntil = Date().addingTimeInterval(backoffSeconds)
-            backoffSeconds = min(rateLimited ? backoffSeconds * 2 : backoffSeconds * 1.5, 900)
+            backoffSeconds = min(rateLimited ? backoffSeconds * 2 : backoffSeconds * 1.5, 600)
         }
         savePending()
         persist()
         updateTranslationNote()
     }
 
-    /// One request for several lines, joined by newlines; falls back to one request per line if the service does
-    /// not give back the same number of lines.
+    /// One request for the whole batch (see `SubtitleTranslator.translateLines`). The source language is the one
+    /// picked in the dialog, otherwise Google detects it ("auto") — never Whisper's guess, which can be wrong.
     private func translateBatch(_ lines: [String], to target: String) async throws -> [String] {
-        let server = SpeechSettings.shared.libreTranslateServer
-        let from = sourceLanguage ?? "auto"
-        if lines.count > 1 {
-            let clean = lines.map { $0.replacingOccurrences(of: "\n", with: " ") }
-            let joined = try await SubtitleTranslator.translate(clean.joined(separator: "\n"), from: from, to: target, serverURL: server)
-            let parts = joined.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            if parts.count == lines.count { return parts }
-        }
-        var result: [String] = []
-        for line in lines {
-            result.append(try await SubtitleTranslator.translate(line, from: from, to: target, serverURL: server))
-        }
-        return result
+        try await SubtitleTranslator.translateLines(lines, from: sourceLanguage ?? "auto", to: target,
+                                                    serverURL: SpeechSettings.shared.libreTranslateServer)
     }
 
     private func apply(_ translated: String, original: String, to start: Int) {
@@ -588,8 +623,9 @@ final class LiveSubtitles: ObservableObject {
     }
 
     private static func cacheKey(source: String, language: String?, translateTo: String?, dual: Bool) -> String {
-        // v4: subtitles made before the extraction fix (v0.38 and older) can be timed against the wrong audio.
-        let raw = "v4|\(source)|\(language ?? "auto")|\(translateTo ?? "")|\(dual)"
+        // v5: subtitles made before the extraction fix (v0.38 and older) can be timed against the wrong audio, and
+        // before v0.54 "auto" could lock onto a wrong language (Family Guy came out in Korean).
+        let raw = "v5|\(source)|\(language ?? "auto")|\(translateTo ?? "")|\(dual)"
         let digest = SHA256.hash(data: Data(raw.utf8))
         return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
