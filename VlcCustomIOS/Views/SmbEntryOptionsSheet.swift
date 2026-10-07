@@ -101,7 +101,7 @@ struct SmbEntryOptionsSheet: View {
                             Label("Buộc lấy thumbnail…", systemImage: "camera.viewfinder")
                         }
                     } footer: {
-                        Text("Cho video không tự lấy được thumbnail (hoặc lấy ra hình không ưng): tự chọn vị trí và cách đọc file, xem trước rồi lưu.")
+                        Text("Cho video không tự lấy được thumbnail: tự thử lại kỹ hơn (nhiều mốc, hai cách đọc file, chờ lâu hơn) và lưu luôn.")
                     }
                 }
 

@@ -160,14 +160,14 @@ struct SettingsView: View {
                 } header: {
                     Text("Thumbnail nền")
                 } footer: {
-                    Text("Tự tạo thumbnail còn thiếu cho các thư mục SMB đã từng mở, từng cái một. Khi đang xem video sẽ tự chờ, và luôn nhường cho thư mục đang mở trên màn hình.")
+                    Text("Tự tạo thumbnail (thường + động) còn thiếu cho các thư mục SMB đã mở, từng cái một. Thư mục đang xem luôn được làm trước, sau đó theo thứ tự đã sắp xếp trong \"Thư mục đã xem\". Khi đang xem video sẽ tự chờ.")
                 }
                 Section {
                     Toggle(isOn: $animatedThumbnails) {
                         Label("Thumbnail động", systemImage: "play.rectangle.on.rectangle")
                     }
                 } footer: {
-                    Text("Video trong thư mục SMB lần lượt hiện 6 cảnh (10% → 85% thời lượng). Các cảnh được tạo sau thumbnail thường, chỉ cho video đang hiện trên màn hình, và lưu lại cho lần sau. Tốn thêm thời gian tạo, khoảng 150KB mỗi video.")
+                    Text("Video trong thư mục SMB lần lượt hiện 6 cảnh (10% → 85% thời lượng). Các cảnh được Thumbnail nền tạo sẵn (kể cả khi tắt mục này), nên bật lên là có ngay; khoảng 150KB mỗi video.")
                 }
                 Section {
                     HStack {

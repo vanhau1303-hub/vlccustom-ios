@@ -542,6 +542,30 @@ actor ThumbnailService {
     /// screen always goes first.
     var isIdle: Bool { smbActive == 0 && smbWaiters.isEmpty }
 
+    /// "Buộc lấy thumbnail": the normal spots (25%, then 40/60/15/75% past black frames) with much more time, over
+    /// libVLC's SMB first and the compatibility proxy next, ignoring any "no frame" marker. On success it becomes
+    /// the thumbnail, the route that worked is remembered for playback, and the moving-thumbnail frames are made too.
+    func forceVideoThumbnail(source: String, host: String, path: String,
+                             progress: @escaping @MainActor (String) -> Void) async -> UIImage? {
+        let login = await SmbRegistry.shared.login(for: host)
+        for route in [SmbPlaybackRoute.direct, .proxy] {
+            if Task.isCancelled { return nil }
+            await progress(route == .direct ? "Đang lấy (cách thường)…" : "Cách thường không được — thử chế độ tương thích…")
+            guard let target = SmbPlayback.location(host: host, path: path, route: route, login: login) else { continue }
+            guard let cgImage = await VLCSnapshotter.snapshot(location: target.url, options: target.options,
+                                                              maxWidth: 640, position: 0.25, timeout: 90, spotTimeout: 18)
+            else { continue }
+            let image = UIImage(cgImage: cgImage)
+            setThumbnail(image, source: source)
+            SmbRoutePreferences.set(source, proxy: route == .proxy)
+            PlaybackDiagnostics.append("thumb: forced \(path) via \(route.rawValue)")
+            await progress("Đang tạo thumbnail động…")
+            _ = await smbPreview(source: source, host: host, path: path)
+            return image
+        }
+        return nil
+    }
+
     /// A frame the user picked ("Buộc lấy thumbnail") becomes the thumbnail, replacing any "no frame" marker.
     func setThumbnail(_ image: UIImage, source: String) {
         forget(source: source)

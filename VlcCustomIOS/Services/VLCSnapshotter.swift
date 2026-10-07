@@ -31,14 +31,17 @@ final class VLCSnapshotter: @unchecked Sendable {
     /// A black / blank frame (fade, scene change, intro card) is not kept: other spots are tried in the same session
     /// and the first one with a real picture wins (the brightest one if every spot is dark).
     static func snapshot(location: String, options: [String], maxWidth: Int = 640, position: Float = 0.25,
-                         timeout: TimeInterval = 20) async -> CGImage? {
+                         timeout: TimeInterval = 20, spotTimeout: TimeInterval = 12) async -> CGImage? {
         var positions: [Float] = []
         if position > 0 {
-            for p in [position, 0.4, 0.6, 0.15, 0.75] where !positions.contains(p) { positions.append(p) }
+            for p in [position] + spots where !positions.contains(p) { positions.append(p) }
         }
         return await run { grab(location: location, options: options, maxWidth: maxWidth, positions: positions,
-                                firstUsable: true, timeout: timeout) }.first
+                                firstUsable: true, timeout: timeout, spotTimeout: spotTimeout) }.first
     }
+
+    /// The agreed spots for a normal thumbnail, in order: 25%, then 40%, 60%, 15%, 75% when the frame is black.
+    static let spots: [Float] = [0.25, 0.4, 0.6, 0.15, 0.75]
 
     /// Several frames of one video (thumbnail động): one libVLC session seeking from spot to spot. Spots that give no
     /// frame are skipped.
@@ -48,16 +51,21 @@ final class VLCSnapshotter: @unchecked Sendable {
                          firstUsable: false, timeout: timeout) }
     }
 
-    /// Exactly the frame at `position`, dark or not, with a long time limit — "Buộc lấy thumbnail".
-    static func frame(location: String, options: [String], maxWidth: Int, position: Float,
-                      timeout: TimeInterval = 60) async -> CGImage? {
-        await run { grab(location: location, options: options, maxWidth: maxWidth, positions: [position],
-                         firstUsable: false, timeout: timeout, spotTimeout: timeout - 8) }.first
-    }
+    /// At most two libVLC grab players at once in the whole app (folder prefill, cells on screen and the background
+    /// pass all ask at the same time): each is a decoder plus an SMB stream, and too many together got the app
+    /// killed for memory when opening big folders.
+    private static let slots = DispatchSemaphore(value: 2)
 
     private static func run(_ work: @escaping @Sendable () -> [CGImage]) async -> [CGImage] {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async { continuation.resume(returning: work()) }
+            DispatchQueue.global(qos: .utility).async {
+                let startGeneration = generation
+                while slots.wait(timeout: .now() + 0.25) == .timedOut {
+                    if generation != startGeneration { continuation.resume(returning: []); return }
+                }
+                defer { slots.signal() }
+                continuation.resume(returning: work())
+            }
         }
     }
 
@@ -195,10 +203,8 @@ final class VLCSnapshotter: @unchecked Sendable {
             if cancelled() { return [] }
             return firstUsable ? (best.map { [$0.image] } ?? []) : results
         }
-        // Kept, paused, as a fallback: some files (fragmented MP4 without an index) take longer to open at a spot
-        // than the whole budget, and a frame from the start beats no thumbnail.
-        libvlc_media_player_set_pause(probe.player, 1)
-        defer { probe.close() }
+        // Closed before the spots: only one player per grab at a time (memory).
+        probe.close()
 
         // 2) One fresh player per spot, opened right there.
         let reserve: TimeInterval = 6
@@ -219,10 +225,11 @@ final class VLCSnapshotter: @unchecked Sendable {
         }
         if cancelled() { return [] }
 
-        // 3) Nothing from any spot: whatever the first player shows (keeps playing from the start).
-        if firstUsable ? best == nil : results.isEmpty {
-            probe.sink.reset()
-            libvlc_media_player_set_pause(probe.player, 0)
+        // 3) Nothing from any spot (fragmented MP4 without an index can take longer to open at a spot than the
+        // whole budget): a frame from the start beats no thumbnail.
+        if firstUsable ? best == nil : results.isEmpty,
+           let probe = Session(location: location, options: options, maxWidth: maxWidth, minFrames: 3) {
+            defer { probe.close() }
             let fallbackDeadline = max(deadline, Date().addingTimeInterval(reserve))
             if let image = probe.frame(until: fallbackDeadline, cancelled: cancelled) {
                 if firstUsable {
