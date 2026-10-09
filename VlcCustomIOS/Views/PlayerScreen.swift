@@ -138,13 +138,15 @@ struct PlayerScreen: View {
 
             if showControls && !locked {
                 VStack(spacing: 0) {
-                    // Top bar: close + file name only. All tools sit in the bottom panel as roomy 44pt round
-                    // buttons, the rarer ones (aspect, deinterlace, picture) tucked into a "more" menu.
+                    // Top bar: close, file name, touch lock. All other tools sit in the bottom panel as roomy 44pt
+                    // round buttons, the rarer ones (aspect, deinterlace, picture) tucked into a "more" menu.
                     HStack(spacing: 10) {
                         controlButton("xmark") { close() }
                         Text(queue.current?.name ?? "")
                             .font(.subheadline.weight(.medium)).foregroundStyle(.white).lineLimit(2)
                         Spacer(minLength: 0)
+                        // Touch lock (the bottom row is full on an upright phone).
+                        controlButton("lock.open.fill") { lock() }
                     }
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
@@ -192,7 +194,6 @@ struct PlayerScreen: View {
                             }
                             controlButton("captions.bubble") { subtitleSheet = .tracks }
                             controlButton("waveform") { subtitleSheet = .ai }
-                            controlButton("lock.fill") { lock() }
                             Menu {
                                 Button { player.cycleAspectRatio() } label: { Label("Tỉ lệ khung hình", systemImage: "aspectratio") }
                                 Button { player.toggleDeinterlace() } label: {
