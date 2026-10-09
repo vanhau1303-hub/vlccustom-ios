@@ -703,8 +703,6 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     /// A downloaded subtitle file (OpenSubtitles) becomes a subtitle track of this video and is shown. Remembered so it
     /// comes back when the video is reopened after the app was in the background.
     func addSubtitleFile(_ url: URL) {
-        // The AI / translated overlay would sit on top of it.
-        LiveSubtitles.shared.reset()
         if let source = currentSource { addedSubtitles[source] = url }
         let player = mediaPlayer
         VLCControl.run { _ = player.addPlaybackSlave(url, type: .subtitle, enforce: true) }

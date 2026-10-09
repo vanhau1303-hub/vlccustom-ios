@@ -107,6 +107,8 @@ struct OpenSubtitlesSection: View {
         Task {
             do {
                 let file = try await OpenSubtitles.download(result)
+                // The AI / translated overlay would sit on top of it.
+                LiveSubtitles.shared.reset()
                 player.addSubtitleFile(file)
                 downloading = nil
                 onAdded()
