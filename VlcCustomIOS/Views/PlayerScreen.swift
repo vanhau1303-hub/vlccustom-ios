@@ -610,6 +610,13 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             }
             if let resumeAtMs { media.addOption(":start-time=\(Double(resumeAtMs) / 1000)") }
             VLCControl.play(self.mediaPlayer, media: media)
+            // A subtitle added from OpenSubtitles for this file comes back with it.
+            if let subtitle = self.addedSubtitles[item.source] {
+                let player = self.mediaPlayer
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    VLCControl.run { _ = player.addPlaybackSlave(subtitle, type: .subtitle, enforce: true) }
+                }
+            }
             // No "not playing after N seconds → switch route" timer any more: MP4s whose audio and video are not
             // interleaved take a long time to start over SMB (libVLC seeks back and forth), and that timer killed
             // them just before they started — while the fallback proxy never works against this server anyway.
@@ -692,6 +699,18 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         get { mediaPlayer.currentAudioTrackIndex }
         set { mediaPlayer.currentAudioTrackIndex = newValue; objectWillChange.send() }
     }
+
+    /// A downloaded subtitle file (OpenSubtitles) becomes a subtitle track of this video and is shown. Remembered so it
+    /// comes back when the video is reopened after the app was in the background.
+    func addSubtitleFile(_ url: URL) {
+        // The AI / translated overlay would sit on top of it.
+        LiveSubtitles.shared.reset()
+        if let source = currentSource { addedSubtitles[source] = url }
+        let player = mediaPlayer
+        VLCControl.run { _ = player.addPlaybackSlave(url, type: .subtitle, enforce: true) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.objectWillChange.send() }
+    }
+    private var addedSubtitles: [String: URL] = [:]
 
     var currentSubtitleTrack: Int32 {
         get { mediaPlayer.currentVideoSubTitleIndex }
@@ -845,6 +864,7 @@ struct TrackPickerSheet: View {
                         }
                     }
                 }
+                OpenSubtitlesSection(player: player) { dismiss() }
             }
             .navigationTitle("Âm thanh & Phụ đề")
             .toolbar {

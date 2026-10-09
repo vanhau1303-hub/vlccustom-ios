@@ -1,24 +1,25 @@
 import Foundation
-import Security
 
-/// Subtitles from OpenSubtitles.com (REST API v1). The user's own free API key (opensubtitles.com → API consumers)
-/// and, optionally, their account (more downloads per day) — kept in the Keychain.
+/// Subtitles from OpenSubtitles.org through its public REST search (rest.opensubtitles.org) — no API key or
+/// account, like the Android app. Checked by hand: a title search returns the subtitles with a direct gzip link.
 ///
-/// Search: by the file's OpenSubtitles hash (size + the first and last 64 KB, read over SMB — an exact match for
-/// that very release) together with a title / season / episode guessed from the file name. Download: a temporary
-/// link from /download, then the file itself; kept in the app's cache so the same subtitle never costs a second
-/// download.
+/// - Exact match: the file's OpenSubtitles hash (size + the first and last 64 KB, read over SMB).
+/// - Title: a series episode is searched by title + season + episode (the language filter does not work together
+///   with those, so languages are filtered here); a movie by title per wanted language (one language per request).
+/// - Download: the gzip link, unpacked and saved in the app's cache as a subtitle file the player loads like any
+///   other subtitle track.
 enum OpenSubtitles {
     struct Result: Identifiable, Hashable {
-        let fileId: Int
-        let language: String
+        let fileId: String
+        let language: String       // "vi", "en"…
+        let languageName: String
         let release: String
-        let fileName: String
+        let format: String         // "srt", "ass"…
         let downloads: Int
         let hashMatch: Bool
         let hearingImpaired: Bool
-        let machineTranslated: Bool
-        var id: Int { fileId }
+        let link: URL
+        var id: String { fileId }
     }
 
     struct Failure: LocalizedError {
@@ -26,116 +27,105 @@ enum OpenSubtitles {
         var errorDescription: String? { message }
     }
 
-    private static let base = "https://api.opensubtitles.com/api/v1"
-    private static var userAgent: String {
-        "VLCcustom v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")"
-    }
+    private static let base = "https://rest.opensubtitles.org/search"
+    /// OpenSubtitles' user agent for apps without a registered one.
+    private static let userAgent = "TemporaryUserAgent"
 
-    // MARK: - Settings (Keychain / UserDefaults)
+    /// ISO 639-1 ("vi") → the 3-letter ids the search takes ("vie").
+    private static let threeLetter = ["vi": "vie", "en": "eng", "ja": "jpn", "ko": "kor", "zh": "chi", "fr": "fre",
+                                      "de": "ger", "es": "spa", "th": "tha", "id": "ind", "ru": "rus", "pt": "por"]
 
-    static var apiKey: String {
-        get { Keychain.get("api-key") }
-        set { Keychain.set(newValue, for: "api-key"); token = nil }
-    }
-    static var username: String {
-        get { UserDefaults.standard.string(forKey: "opensubtitles_user") ?? "" }
-        set { UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespaces), forKey: "opensubtitles_user"); token = nil }
-    }
-    static var password: String {
-        get { Keychain.get("password") }
-        set { Keychain.set(newValue, for: "password"); token = nil }
-    }
-    static var isConfigured: Bool { !apiKey.isEmpty }
-
-    /// Login token for this app session (and the API host the login told us to use).
-    private static var token: String?
-    private static var host = base
-
-    // MARK: - Search
-
-    /// `languages`: "vi,en" style (ISO 639-1).
-    static func search(host smbHost: String, path: String, languages: String) async throws -> [Result] {
-        guard isConfigured else { throw Failure(message: "Chưa nhập API key OpenSubtitles.") }
-        let name = (path as NSString).lastPathComponent
-        let guess = TitleGuess(fileName: name)
-        var items = [URLQueryItem(name: "languages", value: languages)]
-        if let hash = await movieHash(host: smbHost, path: path) {
-            items.append(URLQueryItem(name: "moviehash", value: hash))
+    /// `languages`: wanted ISO 639-1 codes, most wanted first.
+    static func search(host: String, path: String, languages: [String]) async throws -> [Result] {
+        let guess = TitleGuess(fileName: (path as NSString).lastPathComponent)
+        var requests: [String] = []
+        if let (size, hash) = await fileHash(host: host, path: path) {
+            requests.append("moviebytesize-\(size)/moviehash-\(hash)")
         }
-        items.append(URLQueryItem(name: "query", value: guess.query.lowercased()))
+        let query = "query-" + (guess.query.lowercased().addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? "")
         if let season = guess.season, let episode = guess.episode {
-            items.append(URLQueryItem(name: "season_number", value: String(season)))
-            items.append(URLQueryItem(name: "episode_number", value: String(episode)))
+            requests.append("episode-\(episode)/\(query)/season-\(season)")
+        } else {
+            for code in languages { requests.append("\(query)/sublanguageid-\(threeLetter[code] ?? code)") }
         }
-        // The API wants its parameters sorted (it redirects otherwise).
-        items.sort { $0.name < $1.name }
-        var components = URLComponents(string: base + "/subtitles")!
-        components.queryItems = items
-        var request = URLRequest(url: components.url!)
-        prepare(&request)
-        let json = try await send(request)
-        let data = json["data"] as? [[String: Any]] ?? []
-        var results: [Result] = []
-        for item in data {
-            guard let attributes = item["attributes"] as? [String: Any],
-                  let files = attributes["files"] as? [[String: Any]], let first = files.first,
-                  let fileId = first["file_id"] as? Int else { continue }
-            results.append(Result(
+
+        var found: [String: Result] = [:]
+        var lastError: Error?
+        for path in requests {
+            do {
+                for result in try await fetch(path) where found[result.fileId] == nil || result.hashMatch {
+                    found[result.fileId] = result
+                }
+            } catch {
+                lastError = error
+            }
+        }
+        if found.isEmpty, let lastError { throw lastError }
+        // Wanted languages only; exact file matches first, then by language order, then the most downloaded.
+        let order = Dictionary(uniqueKeysWithValues: languages.enumerated().map { ($1, $0) })
+        return found.values
+            .filter { order[$0.language] != nil }
+            .sorted {
+                if $0.hashMatch != $1.hashMatch { return $0.hashMatch }
+                let a = order[$0.language] ?? 99, b = order[$1.language] ?? 99
+                if a != b { return a < b }
+                return $0.downloads > $1.downloads
+            }
+    }
+
+    private static func fetch(_ path: String) async throws -> [Result] {
+        guard let url = URL(string: "\(base)/\(path)") else { return [] }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 25
+        request.setValue(userAgent, forHTTPHeaderField: "X-User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if http.statusCode == 429 { throw Failure(message: "OpenSubtitles đang giới hạn, thử lại sau ít phút.") }
+            throw Failure(message: "OpenSubtitles lỗi \(http.statusCode).")
+        }
+        guard let items = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return [] }
+        return items.compactMap { item in
+            guard let fileId = item["IDSubtitleFile"] as? String,
+                  let link = (item["SubDownloadLink"] as? String).flatMap(URL.init(string:)) else { return nil }
+            let release = (item["MovieReleaseName"] as? String)?.trimmingCharacters(in: .whitespaces)
+            return Result(
                 fileId: fileId,
-                language: attributes["language"] as? String ?? "?",
-                release: attributes["release"] as? String ?? (first["file_name"] as? String ?? ""),
-                fileName: first["file_name"] as? String ?? "",
-                downloads: attributes["download_count"] as? Int ?? 0,
-                hashMatch: attributes["moviehash_match"] as? Bool ?? false,
-                hearingImpaired: attributes["hearing_impaired"] as? Bool ?? false,
-                machineTranslated: (attributes["machine_translated"] as? Bool ?? false) || (attributes["ai_translated"] as? Bool ?? false)
-            ))
-        }
-        // Exact file matches first, then the most downloaded.
-        return results.sorted {
-            if $0.hashMatch != $1.hashMatch { return $0.hashMatch }
-            return $0.downloads > $1.downloads
+                language: (item["ISO639"] as? String ?? "").lowercased(),
+                languageName: item["LanguageName"] as? String ?? "",
+                release: (release?.isEmpty == false ? release : nil) ?? (item["SubFileName"] as? String ?? ""),
+                format: (item["SubFormat"] as? String ?? "srt").lowercased(),
+                downloads: Int(item["SubDownloadsCnt"] as? String ?? "") ?? 0,
+                hashMatch: (item["MatchedBy"] as? String) == "moviehash",
+                hearingImpaired: (item["SubHearingImpaired"] as? String) == "1",
+                link: link)
         }
     }
 
     // MARK: - Download
 
-    /// The subtitle's lines (from the cache when it was downloaded before) and, after a real download, what the
-    /// account has left for today.
-    static func download(_ result: Result) async throws -> (lines: [TimedLine], note: String?) {
-        let cached = cacheDirectory.appendingPathComponent("\(result.fileId).sub")
-        if let data = try? Data(contentsOf: cached) {
-            return (parse(data, fileName: result.fileName), nil)
-        }
-        try await loginIfNeeded()
-        var request = URLRequest(url: URL(string: host + "/download")!)
-        request.httpMethod = "POST"
-        prepare(&request)
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["file_id": result.fileId])
-        let json = try await send(request)
-        guard let link = (json["link"] as? String).flatMap(URL.init(string:)) else {
-            throw Failure(message: (json["message"] as? String) ?? "OpenSubtitles không trả về link tải.")
-        }
-        let (data, response) = try await URLSession.shared.data(from: link)
+    /// The subtitle as a local file (downloaded once, then from the cache), ready for the player.
+    static func download(_ result: Result) async throws -> URL {
+        let ext = ["srt", "ass", "ssa", "vtt", "sub"].contains(result.format) ? result.format : "srt"
+        let file = cacheDirectory.appendingPathComponent("\(result.fileId).\(ext)")
+        if FileManager.default.fileExists(atPath: file.path) { return file }
+        var request = URLRequest(url: result.link)
+        request.timeoutInterval = 30
+        request.setValue(userAgent, forHTTPHeaderField: "X-User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw Failure(message: "Tải phụ đề lỗi (mã \(http.statusCode)).")
+            throw Failure(message: http.statusCode == 429 || http.statusCode == 407
+                          ? "Đã tải quá nhiều phụ đề, OpenSubtitles tạm chặn — thử lại sau."
+                          : "Tải phụ đề lỗi (mã \(http.statusCode)).")
         }
-        try? data.write(to: cached)
-        let lines = parse(data, fileName: json["file_name"] as? String ?? result.fileName)
-        guard !lines.isEmpty else { throw Failure(message: "File phụ đề trống hoặc không đọc được.") }
-        var note: String?
-        if let remaining = json["remaining"] as? Int {
-            note = "Còn \(remaining) lượt tải hôm nay."
+        guard let raw = gunzip(data) ?? (data.first == 0x31 || data.first == 0xEF ? data : nil) else {
+            throw Failure(message: "Không giải nén được phụ đề.")
         }
-        PlaybackDiagnostics.append("opensubtitles: downloaded \(result.fileId) (\(result.language)) — \(note ?? "")")
-        return (lines, note)
-    }
-
-    private static func parse(_ data: Data, fileName: String) -> [TimedLine] {
-        let text = ExistingSubtitles.decode(data)
-        let ext = (fileName as NSString).pathExtension.lowercased()
-        let raw = ext == "ass" || ext == "ssa" ? ExistingSubtitles.parseAss(text) : ExistingSubtitles.parseSrtOrVtt(text)
-        return ExistingSubtitles.finish(raw)
+        // Saved as UTF-8 whatever the original encoding (Vietnamese ones are often Windows-1258).
+        let text = ExistingSubtitles.decode(raw)
+        guard !text.isEmpty else { throw Failure(message: "File phụ đề trống.") }
+        try Data(text.utf8).write(to: file, options: .atomic)
+        PlaybackDiagnostics.append("opensubtitles: \(result.fileId) (\(result.language)) \(result.release)")
+        return file
     }
 
     private static let cacheDirectory: URL = {
@@ -145,66 +135,25 @@ enum OpenSubtitles {
         return dir
     }()
 
-    // MARK: - HTTP
-
-    private static func prepare(_ request: inout URLRequest) {
-        request.timeoutInterval = 30
-        request.setValue(apiKey, forHTTPHeaderField: "Api-Key")
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if request.httpMethod == "POST" { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-    }
-
-    private static func send(_ request: URLRequest) async throws -> [String: Any] {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
-        guard let http = response as? HTTPURLResponse else { return json }
-        let message = (json["message"] as? String) ?? (json["errors"] as? [String])?.joined(separator: " ") ?? ""
-        switch http.statusCode {
-        case 200..<300: return json
-        case 401: throw Failure(message: "API key hoặc tài khoản OpenSubtitles không đúng. \(message)")
-        case 403: throw Failure(message: "OpenSubtitles từ chối (403). \(message)")
-        case 406: throw Failure(message: "Hết lượt tải phụ đề hôm nay. \(message)")
-        case 429: throw Failure(message: "OpenSubtitles đang giới hạn, thử lại sau ít phút.")
-        default: throw Failure(message: "OpenSubtitles lỗi \(http.statusCode). \(message)")
-        }
-    }
-
-    /// Logs in once per app session when an account is set (anonymous downloads are far more limited).
-    private static func loginIfNeeded() async throws {
-        guard token == nil, !username.isEmpty, !password.isEmpty else { return }
-        var request = URLRequest(url: URL(string: base + "/login")!)
-        request.httpMethod = "POST"
-        prepare(&request)
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["username": username, "password": password])
-        let json = try await send(request)
-        token = json["token"] as? String
-        if let baseURL = json["base_url"] as? String, !baseURL.isEmpty {
-            host = baseURL.hasPrefix("http") ? baseURL + "/api/v1" : "https://\(baseURL)/api/v1"
-        }
-    }
-
-    /// Checks the key (and the account) from the settings: a tiny search, then a login.
-    static func check() async -> String {
-        do {
-            var components = URLComponents(string: base + "/subtitles")!
-            components.queryItems = [URLQueryItem(name: "languages", value: "en"), URLQueryItem(name: "query", value: "matrix")]
-            var request = URLRequest(url: components.url!)
-            prepare(&request)
-            _ = try await send(request)
-            token = nil
-            try await loginIfNeeded()
-            return username.isEmpty ? "API key dùng được ✓ (chưa đăng nhập: ít lượt tải hơn)" : "API key và tài khoản dùng được ✓"
-        } catch {
-            return error.localizedDescription
-        }
+    /// gzip → bytes (header and trailer stripped, the deflate stream inflated with Apple's zlib).
+    private static func gunzip(_ data: Data) -> Data? {
+        let b = [UInt8](data)
+        guard b.count > 18, b[0] == 0x1F, b[1] == 0x8B, b[2] == 8 else { return nil }
+        let flags = b[3]
+        var i = 10
+        if flags & 0x04 != 0 { guard i + 2 <= b.count else { return nil }; i += 2 + (Int(b[i]) | Int(b[i + 1]) << 8) }
+        if flags & 0x08 != 0 { while i < b.count, b[i] != 0 { i += 1 }; i += 1 }
+        if flags & 0x10 != 0 { while i < b.count, b[i] != 0 { i += 1 }; i += 1 }
+        if flags & 0x02 != 0 { i += 2 }
+        guard i < b.count - 8 else { return nil }
+        let deflate = Data(b[i..<(b.count - 8)])
+        return try? (deflate as NSData).decompressed(using: .zlib) as Data
     }
 
     // MARK: - OpenSubtitles hash
 
-    /// File size + the 64-bit little-endian sum of the first and last 64 KB, as 16 hex digits.
-    static func movieHash(host: String, path: String) async -> String? {
+    /// (size, hash): size + the 64-bit little-endian sum of the first and last 64 KB, as 16 hex digits.
+    static func fileHash(host: String, path: String) async -> (Int64, String)? {
         guard let connection = await SmbRegistry.shared.getOrReconnect(host),
               let size = try? await connection.fileSize(path: path), size >= 131_072,
               let head = try? await connection.readChunk(path: path, offset: 0, count: 65_536),
@@ -218,31 +167,7 @@ enum OpenSubtitles {
                 }
             }
         }
-        return String(format: "%016llx", hash)
-    }
-
-    // MARK: - Keychain
-
-    private enum Keychain {
-        static let service = "com.vlccustom.ios.opensubtitles"
-        static func get(_ account: String) -> String {
-            let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                        kSecAttrAccount as String: account, kSecReturnData as String: true]
-            var result: AnyObject?
-            guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return "" }
-            return String(data: data, encoding: .utf8) ?? ""
-        }
-        static func set(_ value: String, for account: String) {
-            let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                        kSecAttrAccount as String: account]
-            SecItemDelete(query as CFDictionary)
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            var add = query
-            add[kSecValueData as String] = Data(trimmed.utf8)
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(add as CFDictionary, nil)
-        }
+        return (size, String(format: "%016llx", hash))
     }
 }
 
