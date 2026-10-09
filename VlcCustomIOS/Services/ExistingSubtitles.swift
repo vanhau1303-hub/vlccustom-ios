@@ -90,7 +90,7 @@ enum ExistingSubtitles {
     }
 
     /// Sorted, merged when two lines start together, and given an end when the container had none.
-    private static func finish(_ raw: [TimedLine]) -> [TimedLine] {
+    static func finish(_ raw: [TimedLine]) -> [TimedLine] {
         var lines = raw.filter { !$0.text.isEmpty }.sorted { $0.startMs < $1.startMs }
         var merged: [TimedLine] = []
         for line in lines {

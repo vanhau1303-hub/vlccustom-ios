@@ -63,6 +63,10 @@ struct SpeechSubtitleDialog: View {
                     Text("Tìm trong file MKV và file phụ đề cùng tên bên cạnh video, rồi dịch sang ngôn ngữ ở mục \"Dịch sang\".")
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                OpenSubtitlesSection(source: source, live: live) {
+                    onUseExisting()
+                    dismiss()
+                }
                 Section("Mô hình nhận dạng") {
                     Picker("Kích thước mô hình", selection: $settings.modelSize) {
                         ForEach(WhisperModelSize.allCases) { size in
