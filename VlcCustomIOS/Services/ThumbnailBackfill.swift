@@ -7,6 +7,8 @@ import UIKit
 /// - the folder being browsed always goes first (it interrupts whatever folder was being done);
 /// - then the remembered folders in the user's order (Cài đặt → Thumbnail nền → Thư mục đã xem: drag to reorder,
 ///   tick / untick to include);
+/// - a folder the user pauses stops at once, drops to the end of the list and the next one starts; it stays paused
+///   (also when browsed — the screen still makes its own thumbnails) until resumed;
 /// - playback first: while a video is open it waits, and it only starts a job when no thumbnail for the screen is
 ///   being made.
 @MainActor
@@ -15,6 +17,7 @@ final class ThumbnailBackfill: ObservableObject {
     static let enabledKey = "thumbs_backfill"
     private static let visitedKey = "thumbs_backfill_folders"
     private static let excludedKey = "thumbs_backfill_excluded"
+    private static let pausedKey = "thumbs_backfill_paused"
     private static let maxFolders = 150
 
     struct Folder: Codable, Hashable {
@@ -24,7 +27,7 @@ final class ThumbnailBackfill: ObservableObject {
     }
 
     enum Phase: Equatable {
-        case idle, scanning, working, waitingForVideo, waitingForApp, paused
+        case idle, scanning, working, waitingForVideo, waitingForApp
     }
 
     @Published private(set) var phase: Phase = .idle {
@@ -35,12 +38,13 @@ final class ThumbnailBackfill: ObservableObject {
     @Published private(set) var current: Folder?
     /// Folders still queued after the current one.
     @Published private(set) var foldersLeft = 0
-    @Published var userPaused = false
     @Published private(set) var visitedCount = 0
     /// Remembered folders, in the order the background pass goes through them (the user's order).
     @Published private(set) var visited: [Folder]
     /// Folders the user unticked: not done in the background (still done while being browsed).
     @Published private(set) var excluded: Set<Folder>
+    /// Folders the user paused: skipped (kept at the end of the list) until resumed.
+    @Published private(set) var paused: Set<Folder>
     /// What happened to each folder in this session.
     @Published private(set) var states: [Folder: FolderState] = [:]
     /// Thumbnails actually on disk for each folder looked at in this session.
@@ -49,7 +53,7 @@ final class ThumbnailBackfill: ObservableObject {
     @Published private(set) var browsing: Folder?
 
     enum FolderState: Equatable {
-        case waiting, scanning, working, complete, unreachable
+        case waiting, scanning, working, complete, unreachable, paused
     }
 
     /// What a pass over a folder makes: normal thumbnails, moving-thumbnail frames, or both (the folder on screen).
@@ -65,11 +69,14 @@ final class ThumbnailBackfill: ObservableObject {
     private var doneStatics: Set<Folder> = []
     private var donePreviews: Set<Folder> = []
     private var task: Task<Void, Never>?
+    /// Which run owns the state: a pass stopped by a pause can still be finishing while the next one has started.
+    private var runID = 0
 
     private init() {
         let defaults = UserDefaults.standard
         visited = defaults.data(forKey: Self.visitedKey).flatMap { try? JSONDecoder().decode([Folder].self, from: $0) } ?? []
         excluded = Set(defaults.data(forKey: Self.excludedKey).flatMap { try? JSONDecoder().decode([Folder].self, from: $0) } ?? [])
+        paused = Set(defaults.data(forKey: Self.pausedKey).flatMap { try? JSONDecoder().decode([Folder].self, from: $0) } ?? [])
         visitedCount = visited.count
     }
 
@@ -82,25 +89,77 @@ final class ThumbnailBackfill: ObservableObject {
     func visit(host: String, path: String) {
         let folder = Folder(host: host, path: path)
         if !visited.contains(folder) {
-            visited.append(folder)
+            // Above the paused ones, which stay at the end.
+            visited.insert(folder, at: activeEnd)
             if visited.count > Self.maxFolders { visited.removeFirst(visited.count - Self.maxFolders) }
             save()
         }
         browsing = folder
-        if !isDone(folder) { states[folder] = .waiting }
+        if paused.contains(folder) {
+            states[folder] = .paused
+        } else if !isDone(folder) {
+            states[folder] = .waiting
+        }
         start()
+    }
+
+    /// Where the trailing block of paused folders begins.
+    private var activeEnd: Int {
+        visited.lastIndex { !paused.contains($0) }.map { $0 + 1 } ?? 0
+    }
+
+    /// Stops this folder now (the next one starts) and moves it to the end of the list until resumed.
+    func pause(_ folder: Folder) {
+        guard !paused.contains(folder) else { return }
+        paused.insert(folder)
+        if let index = visited.firstIndex(of: folder) {
+            visited.remove(at: index)
+            visited.append(folder)
+        }
+        queue.removeAll { $0.folder == folder }
+        states[folder] = .paused
+        foldersLeft = Set(queue.map(\.folder)).count
+        if current == folder {
+            // Stop it now and go on with the next folder at once (a grab already running finishes on its own).
+            task?.cancel()
+            task = nil
+            phase = .idle
+            current = nil
+            start()
+        }
+        save()
+        PlaybackDiagnostics.append("backfill: paused \(folder.path)")
+    }
+
+    /// Back in the queue, at the end of the folders not paused.
+    func resume(_ folder: Folder) {
+        guard paused.remove(folder) != nil else { return }
+        if let index = visited.firstIndex(of: folder) {
+            visited.remove(at: index)
+            visited.insert(folder, at: activeEnd)
+        }
+        save()
+        rebuildQueue()
+        if isDone(folder) {
+            states[folder] = .complete
+        } else {
+            states[folder] = excluded.contains(folder) ? nil : .waiting
+        }
+        start()
+        PlaybackDiagnostics.append("backfill: resumed \(folder.path)")
     }
 
     /// App start: every remembered, ticked folder.
     func startAll() {
         rebuildQueue()
         for job in queue { states[job.folder] = .waiting }
+        for folder in paused { states[folder] = .paused }
         start()
     }
 
-    /// Statics of all ticked folders in the user's order, then their moving frames.
+    /// Statics of all ticked, not paused folders in the user's order, then their moving frames.
     private func rebuildQueue() {
-        let included = visited.filter { !excluded.contains($0) }
+        let included = visited.filter { !excluded.contains($0) && !paused.contains($0) }
         queue = included.filter { !doneStatics.contains($0) }.map { Job(folder: $0, stage: .statics) }
             + included.filter { !donePreviews.contains($0) }.map { Job(folder: $0, stage: .previews) }
     }
@@ -135,12 +194,14 @@ final class ThumbnailBackfill: ObservableObject {
             queue.removeAll { $0.folder == folder }
             if states[folder] == .waiting { states[folder] = nil }
         }
+        if paused.contains(folder) { states[folder] = .paused }
         save()
     }
 
     func forget(_ folder: Folder) {
         visited.removeAll { $0 == folder }
         excluded.remove(folder)
+        paused.remove(folder)
         queue.removeAll { $0.folder == folder }
         states[folder] = nil
         save()
@@ -150,6 +211,7 @@ final class ThumbnailBackfill: ObservableObject {
         states = [:]
         visited = []
         excluded = []
+        paused = []
         save()
         stop()
     }
@@ -159,6 +221,7 @@ final class ThumbnailBackfill: ObservableObject {
         let defaults = UserDefaults.standard
         if let data = try? JSONEncoder().encode(visited) { defaults.set(data, forKey: Self.visitedKey) }
         if let data = try? JSONEncoder().encode(Array(excluded)) { defaults.set(data, forKey: Self.excludedKey) }
+        if let data = try? JSONEncoder().encode(Array(paused)) { defaults.set(data, forKey: Self.pausedKey) }
     }
 
     private func stop() {
@@ -170,13 +233,15 @@ final class ThumbnailBackfill: ObservableObject {
 
     private func start() {
         guard enabled, task == nil, nextJobAvailable else { return }
+        runID += 1
+        let id = runID
         task = Task { [weak self] in
-            await self?.run()
+            await self?.run(id)
         }
     }
 
     private var browsingPending: Folder? {
-        guard let browsing, !isDone(browsing) else { return nil }
+        guard let browsing, !isDone(browsing), !paused.contains(browsing) else { return nil }
         return browsing
     }
 
@@ -191,12 +256,12 @@ final class ThumbnailBackfill: ObservableObject {
         while !queue.isEmpty {
             let job = queue.removeFirst()
             let done = job.stage == .statics ? doneStatics.contains(job.folder) : donePreviews.contains(job.folder)
-            if !done { return job }
+            if !done && !paused.contains(job.folder) { return job }
         }
         return nil
     }
 
-    private func run() async {
+    private func run(_ id: Int) async {
         while !Task.isCancelled, let job = nextJob() {
             foldersLeft = Set(queue.map(\.folder)).count
             let completed = await process(job.folder, stage: job.stage)
@@ -204,6 +269,9 @@ final class ThumbnailBackfill: ObservableObject {
             if completed {
                 if job.stage != .previews { doneStatics.insert(job.folder) }
                 if job.stage != .statics { donePreviews.insert(job.folder) }
+            } else if paused.contains(job.folder) {
+                // Paused by the user: left out until resumed (`resume` puts it back in the queue).
+                states[job.folder] = .paused
             } else {
                 // Interrupted by a newly browsed folder: carry on with this one after it.
                 queue.insert(job.stage == .both ? Job(folder: job.folder, stage: .statics) : job, at: 0)
@@ -211,6 +279,8 @@ final class ThumbnailBackfill: ObservableObject {
                 states[job.folder] = .waiting
             }
         }
+        // A newer run (after a pause or a restart) owns the state now.
+        guard id == runID else { return }
         phase = .idle
         current = nil
         task = nil
@@ -223,7 +293,7 @@ final class ThumbnailBackfill: ObservableObject {
     private var passInterrupted = false
     private var passLastCount = Date()
 
-    /// Returns false when it stopped half-way because another folder is now being browsed.
+    /// Returns false when it stopped half-way: another folder is now being browsed, or this one was paused.
     private func process(_ folder: Folder, stage: Stage) async -> Bool {
         phase = .scanning
         states[folder] = .scanning
@@ -244,6 +314,8 @@ final class ThumbnailBackfill: ObservableObject {
         if stage != .previews { jobs += missing.thumbnails.map { (entries[$0], false) } }
         if stage != .statics { jobs += missing.previews.map { (entries[$0], true) } }
         PlaybackDiagnostics.append("backfill: \(folder.path) [\(stage)] — \(entries.count) items, \(jobs.count) to make")
+        // Paused (or stopped) while it was being read: a newer run may already be using the pass state below.
+        if Task.isCancelled || paused.contains(folder) { return false }
         guard !jobs.isEmpty else {
             // After the normal thumbnails, a folder waits for its moving frames (second round).
             states[folder] = stage != .statics || donePreviews.contains(folder) ? .complete : .waiting
@@ -257,37 +329,45 @@ final class ThumbnailBackfill: ObservableObject {
         passInterrupted = false
         let lanes = ThumbnailPolicy.shared.isFast ? 2 : 1
         passLastCount = Date()
-        await withTaskGroup(of: Void.self) { group in
-            for _ in 0..<lanes {
-                group.addTask { @MainActor [weak self] in
-                    while let self, let job = self.nextPassJob(for: folder) {
-                        let source = Self.source(job.entry, folder.host)
-                        // Made meanwhile by the screen (the folder on screen makes its own): nothing to do.
-                        let needed: Bool
-                        if job.preview {
-                            needed = await service.needsPreview(source: source)
-                        } else {
-                            needed = await service.needsThumbnail(source: source)
-                        }
-                        if !needed { continue }
-                        // A video opened (or the app left the screen) half-way makes the job give up without a
-                        // result: wait and do it again.
-                        var attempts = 0
-                        repeat {
-                            await self.waitForTurn()
-                            if Task.isCancelled { return }
-                            self.phase = .working
-                            await self.make(job.entry, preview: job.preview, host: folder.host, source: source)
-                            attempts += 1
-                        } while (PlaybackActivity.shared.isBusy || !Self.appActive) && attempts < 5
-                        // Recounting a 1000-file folder after every job kept the thumbnail actor busy.
-                        if Date().timeIntervalSince(self.passLastCount) > 3 {
-                            self.passLastCount = Date()
-                            self.stats[folder] = await service.stats(host: folder.host, entries: entries)
+        // In their own task so cancelling the run (a pause) stops them at once.
+        let lanesTask = Task { @MainActor in
+            await withTaskGroup(of: Void.self) { group in
+                for _ in 0..<lanes {
+                    group.addTask { @MainActor [weak self] in
+                        while let self, let job = self.nextPassJob(for: folder) {
+                            let source = Self.source(job.entry, folder.host)
+                            // Made meanwhile by the screen (the folder on screen makes its own): nothing to do.
+                            let needed: Bool
+                            if job.preview {
+                                needed = await service.needsPreview(source: source)
+                            } else {
+                                needed = await service.needsThumbnail(source: source)
+                            }
+                            if !needed { continue }
+                            // A video opened (or the app left the screen) half-way makes the job give up without a
+                            // result: wait and do it again.
+                            var attempts = 0
+                            repeat {
+                                await self.waitForTurn()
+                                if Task.isCancelled || self.passInterrupted { return }
+                                self.phase = .working
+                                await self.make(job.entry, preview: job.preview, host: folder.host, source: source)
+                                attempts += 1
+                            } while (PlaybackActivity.shared.isBusy || !Self.appActive) && !Task.isCancelled && attempts < 5
+                            // Recounting a 1000-file folder after every job kept the thumbnail actor busy.
+                            if Date().timeIntervalSince(self.passLastCount) > 3 {
+                                self.passLastCount = Date()
+                                self.stats[folder] = await service.stats(host: folder.host, entries: entries)
+                            }
                         }
                     }
                 }
             }
+        }
+        await withTaskCancellationHandler {
+            await lanesTask.value
+        } onCancel: {
+            lanesTask.cancel()
         }
         stats[folder] = await service.stats(host: folder.host, entries: entries)
         if Task.isCancelled || passInterrupted { return false }
@@ -329,14 +409,12 @@ final class ThumbnailBackfill: ObservableObject {
         }
     }
 
-    /// Holds the job while the user paused it, a video is open or the app is not on screen (iOS stops hardware
+    /// Holds the job while a video is open or the app is not on screen (iOS stops hardware
     /// decoding in the background, so frames would fail). Thumbnails for the folder on screen do not need waiting
     /// for: they jump ahead in `ThumbnailService`'s queue on their own.
     private func waitForTurn() async {
-        while !Task.isCancelled {
-            if userPaused {
-                phase = .paused
-            } else if PlaybackActivity.shared.isBusy {
+        while !Task.isCancelled, !passInterrupted {
+            if PlaybackActivity.shared.isBusy {
                 phase = .waitingForVideo
             } else if !Self.appActive {
                 phase = .waitingForApp
@@ -361,11 +439,12 @@ struct ThumbnailBackfillStatusRow: View {
                     ThumbnailStatsView(stats: stats, showBars: true)
                 }
             }
-            if backfill.phase != .idle {
+            // Pauses this folder only: it drops to the end of the list and the next one starts.
+            if backfill.phase != .idle, let folder = backfill.current {
                 Button {
-                    backfill.userPaused.toggle()
+                    backfill.pause(folder)
                 } label: {
-                    Image(systemName: backfill.userPaused ? "play.fill" : "pause.fill").frame(width: 30, height: 30)
+                    Image(systemName: "pause.fill").frame(width: 30, height: 30)
                 }
                 .buttonStyle(.borderless)
             }
@@ -376,9 +455,12 @@ struct ThumbnailBackfillStatusRow: View {
     private var title: String {
         let more = backfill.foldersLeft > 0 ? " (+\(backfill.foldersLeft) thư mục chờ)" : ""
         switch backfill.phase {
-        case .idle: return "Không có gì cần làm — thumbnail các thư mục đã xem đã đủ"
+        case .idle:
+            let paused = backfill.paused.subtracting(backfill.excluded).count
+            return paused > 0
+                ? "Không có thư mục nào đang làm — \(paused) thư mục đang tạm dừng"
+                : "Không có gì cần làm — thumbnail các thư mục đã xem đã đủ"
         case .scanning: return "Đang đọc thư mục \(backfill.folderName)…"
-        case .paused: return "Đã tạm dừng · \(backfill.folderName)"
         case .waitingForVideo: return "Chờ xem xong video · \(backfill.folderName)"
         case .waitingForApp: return "Chờ mở lại app · \(backfill.folderName)"
         case .working: return "Đang tạo · \(backfill.folderName)\(more)"
@@ -387,8 +469,7 @@ struct ThumbnailBackfillStatusRow: View {
 
     private var icon: String {
         switch backfill.phase {
-        case .idle: return "checkmark.circle"
-        case .paused: return "pause.circle"
+        case .idle: return backfill.paused.subtracting(backfill.excluded).isEmpty ? "checkmark.circle" : "pause.circle"
         case .waitingForVideo: return "play.rectangle"
         default: return "photo.stack"
         }
@@ -453,11 +534,21 @@ struct ThumbnailBackfillFoldersView: View {
                         .opacity(included ? 1 : 0.5)
                         Spacer(minLength: 8)
                         VStack(alignment: .trailing, spacing: 2) {
-                            stateView(backfill.states[folder])
+                            stateView(backfill.paused.contains(folder) ? .paused : backfill.states[folder])
                             if let stats = backfill.stats[folder] {
                                 Text("\(stats.thumbs)/\(stats.media)" + (stats.videos > 0 ? " · động \(stats.previews)/\(stats.videos)" : ""))
                                     .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
                             }
+                        }
+                        if included {
+                            let isPaused = backfill.paused.contains(folder)
+                            Button {
+                                if isPaused { backfill.resume(folder) } else { backfill.pause(folder) }
+                            } label: {
+                                Image(systemName: isPaused ? "play.circle.fill" : "pause.circle")
+                                    .font(.title3)
+                            }
+                            .buttonStyle(.borderless)
                         }
                     }
                     .swipeActions {
@@ -468,7 +559,7 @@ struct ThumbnailBackfillFoldersView: View {
             } header: {
                 Text("Thư mục đã xem (\(backfill.visited.count))")
             } footer: {
-                Text("Thư mục đang xem luôn được làm trước. Sau đó theo thứ tự trong danh sách: bấm \"Sửa\" rồi kéo ≡ để đổi thứ tự, bấm vòng tròn để chọn / bỏ chọn thư mục, vuốt sang trái để quên. Lấy cả thumbnail thường lẫn thumbnail động.")
+                Text("Thư mục đang xem luôn được làm trước. Sau đó theo thứ tự trong danh sách: bấm \"Sửa\" rồi kéo ≡ để đổi thứ tự, bấm vòng tròn để chọn / bỏ chọn thư mục, vuốt sang trái để quên. Bấm ⏸ để tạm dừng một thư mục: nó xuống cuối danh sách và thư mục kế tiếp được làm ngay; bấm ▶ để làm tiếp. Lấy cả thumbnail thường lẫn thumbnail động.")
             }
             Section {
                 Button("Kiểm tra lại tất cả ngay") { backfill.restartAll() }
@@ -496,6 +587,9 @@ struct ThumbnailBackfillFoldersView: View {
         case .unreachable?:
             Label("Không mở được", systemImage: "exclamationmark.triangle")
                 .font(.caption).foregroundStyle(.orange)
+        case .paused?:
+            Label("Tạm dừng", systemImage: "pause.circle.fill")
+                .font(.caption).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
         case nil:
             Text("—").font(.caption).foregroundStyle(.secondary)
         }
