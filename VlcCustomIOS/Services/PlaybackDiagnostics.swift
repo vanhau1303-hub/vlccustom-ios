@@ -19,6 +19,9 @@ enum PlaybackDiagnostics {
     private static var handle: FileHandle?
     private static var writesSinceSizeCheck = 0
     private static let vlcLogger = AppVLCLogger()
+    /// Cài đặt → Chẩn đoán → "Log chi tiết": libVLC's info messages too. Off, only its warnings and errors are
+    /// written (less work while playing); the app's own lines are always written.
+    static let verboseKey = "diag_verbose"
 
     /// Call once at app launch.
     static func start() {
@@ -26,12 +29,19 @@ enum PlaybackDiagnostics {
             trimIfTooBig()
             handle = openHandle()
         }
-        vlcLogger.level = .info
+        vlcLogger.level = UserDefaults.standard.bool(forKey: verboseKey) ? .info : .warning
         VLCLibrary.shared().loggers = [vlcLogger]
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         append("=== app start v\(version), iOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
         HangDiagnostics.start()
         CrashReporter.shared.start()
+    }
+
+    static func setVerbose(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: verboseKey)
+        vlcLogger.level = on ? .info : .warning
+        VLCLibrary.shared().loggers = [vlcLogger]
+        append("log: \(on ? "detailed" : "warnings and errors only")")
     }
 
     static func clear() {

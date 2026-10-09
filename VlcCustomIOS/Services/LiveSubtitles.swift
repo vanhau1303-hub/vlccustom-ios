@@ -113,6 +113,8 @@ final class LiveSubtitles: ObservableObject {
     @Published var errorMessage: String?
     @Published var running = false
     @Published private(set) var cues: [LiveCue] = []
+    /// "Thời gian phụ đề" in the subtitle sheet: + shows the lines later, − earlier (ms). Set per video by the player.
+    @Published var delayMs = 0
     /// Lines recognized but not translated yet (translation service out of quota / offline), e.g.
     /// "Còn 12 câu chưa dịch — tự dịch tiếp lúc 14:05". Nil when nothing is waiting.
     @Published private(set) var translationNote: String?

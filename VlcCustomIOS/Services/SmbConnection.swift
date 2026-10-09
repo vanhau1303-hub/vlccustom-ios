@@ -68,12 +68,19 @@ actor SmbConnection {
         return manager
     }
 
+    /// The share list, kept for a few minutes: each listing is a whole new SMB session (login included), and going
+    /// back to the server's top level asked for it every time.
+    private var sharesCache: (at: Date, names: [String])?
+
     /// The shares on this server (skips hidden admin shares like C$).
     func listShares() async throws -> [String] {
+        if let cached = sharesCache, Date().timeIntervalSince(cached.at) < 300 { return cached.names }
         do {
             let manager = try baseManager()
             let shares = try await manager.listShares()
-            return shares.map(\.name).filter { !$0.hasSuffix("$") }
+            let names = shares.map(\.name).filter { !$0.hasSuffix("$") }
+            sharesCache = (Date(), names)
+            return names
         } catch {
             throw SmbError(message: Self.friendlyMessage(error))
         }
@@ -254,13 +261,19 @@ actor SmbRegistry {
         return SmbPlayback.Login(username: profile.username, password: SmbServerStore.password(for: profile.host), domain: profile.domain)
     }
 
-    /// The live connection for `host`, or a fresh one from the saved login — so a video opened from Playlist or
-    /// Yêu thích still plays when the user has not browsed to that server yet since launching the app.
+    /// The live connection for `host`, or one from the saved login — so a video opened from Playlist or Yêu thích
+    /// still plays when the user has not browsed to that server yet since launching the app.
+    ///
+    /// A saved login worked before, so it is not checked first with a share listing (a whole extra SMB session at
+    /// every launch): the connection is made at once, and its first real request logs in. That also means a screen
+    /// of thumbnails asking at the same moment shares one connection instead of each opening its own.
     func getOrReconnect(_ host: String) async -> SmbConnection? {
         if let existing = get(host) { return existing }
         guard let profile = SmbServerStore.load().first(where: { $0.host.lowercased() == host.lowercased() }) else { return nil }
-        return try? await connect(host: profile.host, username: profile.username,
-                                  password: SmbServerStore.password(for: profile.host), domain: profile.domain)
+        let connection = SmbConnection(host: profile.host, username: profile.username,
+                                       password: SmbServerStore.password(for: profile.host), domain: profile.domain)
+        connections[host.lowercased()] = connection
+        return connection
     }
 
     /// Registers a login without the `listShares` check — only for the CI end-to-end hook, whose Samba server does

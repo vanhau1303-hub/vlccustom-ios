@@ -1,4 +1,5 @@
 import Combine
+import MediaPlayer
 import SwiftUI
 import MobileVLCKit
 import UIKit
@@ -18,9 +19,14 @@ struct PlayerScreen: View {
     /// The "+12s" / "Âm lượng 40%" bubble, observed only by its own small view.
     @State private var hint = GestureHint()
     @State private var showControls = true
-    @State private var showTrackPicker = false
+    /// The subtitle sheet, open on this tab (captions button: the file's tracks; AI button: AI).
+    @State private var subtitleSheet: SubtitleSheet.Tab?
     @State private var showPictureControls = false
-    @State private var showSpeechDialog = false
+    /// The video's thumbnail, blurred behind "Đang mở…" so opening never shows a bare black screen.
+    @State private var poster: UIImage?
+    /// Touch lock: gestures and controls off; the lock badge (shown on a tap) unlocks when held.
+    @State private var locked = false
+    @State private var showUnlock = false
     /// Not observed here: the subtitle overlay and status badge observe it themselves, so a new cue or status does
     /// not re-render the whole player (video surface, gesture layer, controls).
     private let live = LiveSubtitles.shared
@@ -41,35 +47,49 @@ struct PlayerScreen: View {
             VlcVideoView(player: player).ignoresSafeArea()
                 .allowsHitTesting(false)
 
-            // Gestures live on a transparent layer above the video, not on the video view itself: once playback
-            // starts, libVLC inserts its own vout view (with its own tap recognizer) inside the drawable, which
-            // swallowed every tap — so the controls could be hidden but never shown again.
-            Color.clear
-                .contentShape(Rectangle())
-                .ignoresSafeArea()
-                .gesture(
-                    SpatialTapGesture(count: 2)
-                        .onEnded { value in handleDoubleTap(at: value.location, size: geo.size) }
-                        .exclusively(before: SpatialTapGesture(count: 1).onEnded { _ in
-                            withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() }
-                            if showControls { keepControlsVisible() }
-                        })
-                )
-                .simultaneousGesture(playerDragGesture(in: geo.size))
-                // Press and hold = 2× speed while held (VLC for iOS's "long touch speed-up").
-                .simultaneousGesture(
-                    LongPressGesture(minimumDuration: 0.45)
-                        .sequenced(before: DragGesture(minimumDistance: 0))
-                        .onChanged { value in
-                            if case .second(true, _) = value, scratch.speedBoostFrom == nil, scratch.dragMode == nil {
-                                scratch.speedBoostFrom = player.playbackRate
-                                player.playbackRate = 2.0
-                                hint.set("2× ▶▶")
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            if player.isLoading, let poster {
+                Image(uiImage: poster).resizable().scaledToFit()
+                    .blur(radius: 14)
+                    .opacity(0.55)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+
+            if locked {
+                lockLayer
+            } else {
+                // Gestures live on a transparent layer above the video, not on the video view itself: once playback
+                // starts, libVLC inserts its own vout view (with its own tap recognizer) inside the drawable, which
+                // swallowed every tap — so the controls could be hidden but never shown again.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .ignoresSafeArea()
+                    .gesture(
+                        SpatialTapGesture(count: 2)
+                            .onEnded { value in handleDoubleTap(at: value.location, size: geo.size) }
+                            .exclusively(before: SpatialTapGesture(count: 1).onEnded { _ in
+                                withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() }
+                                if showControls { keepControlsVisible() }
+                            })
+                    )
+                    .simultaneousGesture(playerDragGesture(in: geo.size))
+                    // Press and hold = 2× speed while held (VLC for iOS's "long touch speed-up").
+                    .simultaneousGesture(
+                        LongPressGesture(minimumDuration: 0.45)
+                            .sequenced(before: DragGesture(minimumDistance: 0))
+                            .onChanged { value in
+                                if case .second(true, _) = value, scratch.speedBoostFrom == nil, scratch.dragMode == nil {
+                                    scratch.speedBoostFrom = player.playbackRate
+                                    player.playbackRate = 2.0
+                                    hint.set("2× ▶▶")
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                }
                             }
-                        }
-                        .onEnded { _ in endSpeedBoost() }
-                )
+                            .onEnded { _ in endSpeedBoost() }
+                    )
+            }
 
             if player.isLoading {
                 VStack(spacing: 10) {
@@ -103,7 +123,20 @@ struct PlayerScreen: View {
                 }
             }
 
-            if showControls {
+            if let from = player.resumedFrom {
+                StartOverBanner(timeText: format(from)) {
+                    withAnimation { player.startOver() }
+                }
+                .padding(.bottom, showControls ? 240 : 40)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .transition(.opacity)
+                .task(id: from) {
+                    try? await Task.sleep(nanoseconds: 6_000_000_000)
+                    if player.resumedFrom == from { withAnimation { player.resumedFrom = nil } }
+                }
+            }
+
+            if showControls && !locked {
                 VStack(spacing: 0) {
                     // Top bar: close + file name only. All tools sit in the bottom panel as roomy 44pt round
                     // buttons, the rarer ones (aspect, deinterlace, picture) tucked into a "more" menu.
@@ -157,8 +190,9 @@ struct PlayerScreen: View {
                             if queue.items.count > 1 {
                                 controlButton("list.bullet") { showQueue = true }
                             }
-                            controlButton("captions.bubble") { showTrackPicker = true }
-                            controlButton("waveform") { showSpeechDialog = true }
+                            controlButton("captions.bubble") { subtitleSheet = .tracks }
+                            controlButton("waveform") { subtitleSheet = .ai }
+                            controlButton("lock.fill") { lock() }
                             Menu {
                                 Button { player.cycleAspectRatio() } label: { Label("Tỉ lệ khung hình", systemImage: "aspectratio") }
                                 Button { player.toggleDeinterlace() } label: {
@@ -202,7 +236,14 @@ struct PlayerScreen: View {
         .onChange(of: player.didReachEnd) { reached in if reached { playNextOrClose() } }
         // Another file in the same player (next in the folder, picked from the list): drop the previous one's
         // AI / translated subtitles.
+        .task(id: queue.current?.source) {
+            poster = nil
+            guard let source = queue.current?.source else { return }
+            poster = await ThumbnailService.shared.cachedThumbnail(source: source)
+        }
         .onChange(of: queue.current?.source) { source in
+            // Subtitle timing is per video.
+            live.delayMs = 0
             let wasSpeech = live.mode == .speech && live.source != nil && live.source != source
             // The next episode's background job stops here; what it made is on disk and picked up below.
             LiveSubtitles.nextEpisode.reset()
@@ -237,16 +278,12 @@ struct PlayerScreen: View {
                 player.playCurrent()
             }
         }
-        .sheet(isPresented: $showTrackPicker) {
-            TrackPickerSheet(player: player)
+        .sheet(item: $subtitleSheet) { tab in
+            SubtitleSheet(player: player, live: live, tab: tab, videoName: queue.current?.name ?? "",
+                          source: queue.current?.source ?? "")
         }
         .sheet(isPresented: $showPictureControls) {
             PictureControlsSheet(player: player)
-        }
-        .sheet(isPresented: $showSpeechDialog) {
-            SpeechSubtitleDialog(live: live, videoName: queue.current?.name ?? "", durationMs: Int(player.duration),
-                                 source: queue.current?.source ?? "",
-                                 onUseExisting: { player.currentSubtitleTrack = -1 })
         }
         }
     }
@@ -288,7 +325,7 @@ struct PlayerScreen: View {
                 try? await Task.sleep(nanoseconds: UInt64(max(0.05, scratch.hideAt.timeIntervalSinceNow) * 1_000_000_000))
             }
             scratch.hideTimerRunning = false
-            if player.isPlaying, !scrub.seeking, !showTrackPicker, !showPictureControls, !showSpeechDialog, !showQueue {
+            if player.isPlaying, !scrub.seeking, subtitleSheet == nil, !showPictureControls, !showQueue {
                 withAnimation(.easeInOut(duration: 0.25)) { showControls = false }
             }
         }
@@ -302,15 +339,68 @@ struct PlayerScreen: View {
 
     private var speedLabel: String { "\(player.playbackRate == 1 ? "1" : String(format: "%g", player.playbackRate))x" }
 
+    // MARK: - Touch lock
+
+    private func lock() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            locked = true
+            showControls = false
+        }
+        flashUnlock()
+    }
+
+    /// While locked: a tap shows the lock badge for a few seconds; holding it unlocks.
+    private var lockLayer: some View {
+        ZStack {
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
+                .onTapGesture { flashUnlock() }
+            if showUnlock {
+                VStack(spacing: 8) {
+                    Image(systemName: "lock.fill").font(.system(size: 22, weight: .semibold))
+                        .frame(width: 58, height: 58)
+                        .background(Circle().fill(Color.black.opacity(0.55)))
+                    Text("Giữ để mở khoá").font(.caption.weight(.medium))
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(Capsule().fill(Color.black.opacity(0.55)))
+                }
+                .foregroundStyle(.white)
+                .contentShape(Rectangle())
+                .onLongPressGesture(minimumDuration: 0.7) {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        locked = false
+                        showUnlock = false
+                        showControls = true
+                    }
+                    keepControlsVisible()
+                }
+                .transition(.opacity)
+            }
+        }
+    }
+
+    private func flashUnlock() {
+        withAnimation(.easeInOut(duration: 0.2)) { showUnlock = true }
+        let shownAt = Date()
+        scratch.unlockShownAt = shownAt
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            if scratch.unlockShownAt == shownAt { withAnimation(.easeInOut(duration: 0.2)) { showUnlock = false } }
+        }
+    }
+
     // MARK: - Gestures
 
     private func handleDoubleTap(at location: CGPoint, size: CGSize) {
+        let seconds = PlayerSettings.doubleTapSeconds
         if location.x < size.width / 3 {
-            player.skip(ms: -30_000)
-            showHint("-30s")
+            player.skip(ms: Int32(-seconds * 1000))
+            showHint("-\(seconds)s")
         } else if location.x > size.width * 2 / 3 {
-            player.skip(ms: 30_000)
-            showHint("+30s")
+            player.skip(ms: Int32(seconds * 1000))
+            showHint("+\(seconds)s")
         } else {
             player.togglePlayPause()
         }
@@ -421,7 +511,7 @@ struct PlayerScreen: View {
 }
 
 /// Owns the VLCMediaPlayer and republishes its state as SwiftUI-observable properties.
-final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDelegate {
+final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDelegate, RemoteControllable {
     let mediaPlayer = VLCMediaPlayer()
     @Published var isPlaying = false
     /// Not @Published: every change used to re-render the entire player 4×/s. The few views that show time observe
@@ -433,6 +523,13 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     @Published var showError = false
     /// "Xem tiếp từ 12:34?": where this video was left off last time, offered for a few seconds after it opens.
     @Published var resumeOffer: Int32?
+    /// "Tự xem tiếp": opened where it was left off (this position); "Xem từ đầu" shows for a few seconds.
+    @Published var resumedFrom: Int32?
+    /// "Thời gian phụ đề" (ms, + = later) for the subtitles VLC draws; the sheet sets the app's line to the same.
+    /// Back to 0 for every new video.
+    @Published var subtitleDelayMs = 0 {
+        didSet { if subtitleDelayMs != oldValue { applySubtitleDelay() } }
+    }
     private var lastLoggedState = -1
     /// The file playing now (its position is saved when it changes, stops or the app leaves).
     private var currentSource: String?
@@ -483,8 +580,30 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     private var resumeAfterBackground: (item: VideoItem, timeMs: Int32, wasPlaying: Bool)?
 
+    /// "Nghe tiếp khi khoá màn hình": playing on in the background with the picture track off.
+    private var soundOnly = false
+    private var hiddenVideoTrack: Int32 = -1
+    /// Opened while in the background (next episode): without its picture, reopened with it on return.
+    private var openedWithoutVideo = false
+    /// The last item ended while the screen was locked: the player closes when the app comes back.
+    private var endedInBackground = false
+
     @objc private func didEnterBackground() {
         guard let item = PlaybackQueue.shared.current, mediaPlayer.media != nil, !mediaPlayer.isFinished || time > 0 else { return }
+        if PlayerSettings.backgroundAudio, isPlaying {
+            // Keep the sound going (the app stays alive while audio plays, so the SMB connection does too); the
+            // picture is switched off to save the battery.
+            soundOnly = true
+            hiddenVideoTrack = mediaPlayer.currentVideoTrackIndex
+            let player = mediaPlayer
+            VLCControl.run { player.currentVideoTrackIndex = -1 }
+            ResumeStore.saveVideo(source: item.source, timeMs: time)
+            savePosition()
+            RemoteCommands.shared.video = self
+            updateNowPlaying()
+            PlaybackDiagnostics.append("player: background — sound only at \(time)ms")
+            return
+        }
         resumeAfterBackground = (item, time, mediaPlayer.isActive)
         // Survives iOS closing the app in the background: the next launch reopens this video here.
         ResumeStore.saveVideo(source: item.source, timeMs: time)
@@ -495,6 +614,42 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     @objc private func willEnterForeground() {
+        if soundOnly {
+            soundOnly = false
+            RemoteCommands.shared.video = nil
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            if endedInBackground {
+                endedInBackground = false
+                openedWithoutVideo = false
+                didReachEnd = true
+                return
+            }
+            if let item = PlaybackQueue.shared.current, openedWithoutVideo || !isPlaying {
+                // Opened without its picture (next episode), or paused from the lock screen (the app may have been
+                // suspended since, its connection gone): reopen here with the picture.
+                let wasPlaying = isPlaying
+                openedWithoutVideo = false
+                PlaybackDiagnostics.append("player: foreground — reopening with the picture at \(time)ms")
+                VLCControl.stop(mediaPlayer)
+                start(item, resumeAtMs: max(0, time - 1000))
+                if !wasPlaying {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                        guard let self else { return }
+                        VLCControl.pause(self.mediaPlayer)
+                    }
+                }
+            } else {
+                let player = mediaPlayer
+                let track = hiddenVideoTrack
+                VLCControl.run {
+                    // Back to the track it had (the first picture track if that is unknown).
+                    let tracks = (player.videoTrackIndexes as? [NSNumber])?.map(\.int32Value) ?? []
+                    player.currentVideoTrackIndex = tracks.contains(track) ? track : (tracks.first { $0 >= 0 } ?? track)
+                }
+                PlaybackDiagnostics.append("player: foreground — picture back on")
+            }
+            return
+        }
         guard let resume = resumeAfterBackground else { return }
         resumeAfterBackground = nil
         guard resume.item == PlaybackQueue.shared.current else { return }
@@ -535,8 +690,23 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             start(item, resumeAtMs: max(0, resume.ms - 2000))
             return
         }
+        resumedFrom = nil
+        if let saved = PositionStore.position(for: item.source), PlayerSettings.autoResume {
+            // Opened right there (faster than opening at the start and seeking); "Xem từ đầu" for a few seconds.
+            resumeOffer = nil
+            resumedFrom = saved
+            start(item, resumeAtMs: max(0, saved - 2000))
+            return
+        }
         resumeOffer = PositionStore.position(for: item.source)
         start(item)
+    }
+
+    /// "Xem từ đầu" after an automatic resume.
+    func startOver() {
+        resumedFrom = nil
+        let player = mediaPlayer
+        VLCControl.run { player.time = VLCTime(int: 0) }
     }
 
     /// "Xem tiếp": jump to where it was left off (a couple of seconds earlier, to pick the thread up again).
@@ -592,6 +762,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         if currentSource != item.source {
             savePosition()
             currentSource = item.source
+            subtitleDelayMs = 0
         }
         openedAt = Date()
         playGeneration += 1
@@ -617,6 +788,10 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
                 return
             }
             if let resumeAtMs { media.addOption(":start-time=\(Double(resumeAtMs) / 1000)") }
+            // The next episode starting while the screen is locked: sound only (no picture surface in the
+            // background); the picture comes back when the app does.
+            self.openedWithoutVideo = self.soundOnly
+            if self.soundOnly { media.addOption(":no-video") }
             VLCControl.play(self.mediaPlayer, media: media)
             // A subtitle added from OpenSubtitles for this file comes back with it.
             if let subtitle = self.addedSubtitles[item.source] {
@@ -667,6 +842,14 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         fallbackWork?.cancel()
         playGeneration += 1
         VLCControl.stop(mediaPlayer)
+        if soundOnly {
+            // Closed in the background (the last episode ended): nothing left on the lock screen.
+            soundOnly = false
+            openedWithoutVideo = false
+            endedInBackground = false
+            RemoteCommands.shared.video = nil
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        }
     }
 
     func cycleAspectRatio() {
@@ -706,6 +889,58 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     var currentAudioTrack: Int32 {
         get { mediaPlayer.currentAudioTrackIndex }
         set { mediaPlayer.currentAudioTrackIndex = newValue; objectWillChange.send() }
+    }
+
+    private func applySubtitleDelay() {
+        let player = mediaPlayer
+        let microseconds = subtitleDelayMs * 1000
+        VLCControl.run { player.currentVideoSubTitleDelay = microseconds }
+    }
+
+    // MARK: - Lock screen (sound only in the background)
+
+    private func updateNowPlaying() {
+        guard soundOnly else { return }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: PlaybackQueue.shared.current?.name ?? "",
+            MPMediaItemPropertyPlaybackDuration: Double(duration) / 1000,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(mediaPlayer.time.intValue) / 1000,
+            MPNowPlayingInfoPropertyPlaybackRate: mediaPlayer.isPlaying ? Double(cachedRate) : 0.0,
+        ]
+        if let artwork = nowPlayingArtwork, artwork.source == currentSource {
+            let image = artwork.image
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        } else if let source = currentSource {
+            // The video's thumbnail as the lock screen picture.
+            Task { [weak self] in
+                guard let image = await ThumbnailService.shared.cachedThumbnail(source: source) else { return }
+                await MainActor.run {
+                    self?.nowPlayingArtwork = (source, image)
+                    self?.updateNowPlaying()
+                }
+            }
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private var nowPlayingArtwork: (source: String, image: UIImage)?
+
+    func remotePlay() { VLCControl.play(mediaPlayer) }
+    func remotePause() { VLCControl.pause(mediaPlayer) }
+    func remoteTogglePlayPause() { togglePlayPause() }
+
+    func remoteNext() {
+        if PlaybackQueue.shared.moveNext() != nil { playCurrent() }
+    }
+
+    func remotePrevious() {
+        if PlaybackQueue.shared.movePrevious() != nil { playCurrent() }
+    }
+
+    func remoteSeek(toSeconds seconds: Double) {
+        let player = mediaPlayer
+        VLCControl.run { player.time = VLCTime(int: Int32(seconds * 1000)) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.updateNowPlaying() }
     }
 
     private func applySubtitleStyle() {
@@ -785,10 +1020,17 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
                 PlaybackDiagnostics.append("player: state=\(state)")
             }
             PlayerTrace.last = "state \(self.mediaPlayer.state.rawValue) at \(self.time)ms"
+            if self.soundOnly { self.updateNowPlaying() }
             switch self.mediaPlayer.state {
             case .ended:
-                if let source = self.currentSource { PositionStore.clear(source) }
-                self.didReachEnd = true
+                if let source = self.currentSource { PositionStore.markWatched(source, durationMs: self.duration) }
+                if self.soundOnly {
+                    // Screen locked: the next episode is started from here (the screen's own "next" waits for the
+                    // app to come back); after the last one the player closes on return.
+                    if PlaybackQueue.shared.moveNext() != nil { self.playCurrent() } else { self.endedInBackground = true }
+                } else {
+                    self.didReachEnd = true
+                }
             case .error:
                 if let item = PlaybackQueue.shared.current { self.fallbackOrFail(item, reason: "VLC error") }
                 else { self.showError = true }
@@ -817,6 +1059,9 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
                     let player = self.mediaPlayer
                     VLCControl.run { player.currentVideoSubTitleIndex = -1 }
                 }
+                // VLC forgets the subtitle timing when the file is reopened (route switch, background).
+                if self.subtitleDelayMs != 0 { self.applySubtitleDelay() }
+                if self.soundOnly { self.updateNowPlaying() }
             }
             if Date().timeIntervalSince(self.lastPositionSave) > 15 {
                 self.lastPositionSave = Date()
@@ -847,63 +1092,6 @@ struct VlcVideoView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {}
-}
-
-/// Picks the audio track and subtitle track to play, listing whatever VLCKit reports for the current media
-/// (subtitle options already include a "Disabled" entry from VLCKit itself).
-struct TrackPickerSheet: View {
-    @ObservedObject var player: VlcPlayerController
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("Âm thanh") {
-                    ForEach(player.audioTrackOptions) { option in
-                        Button {
-                            player.currentAudioTrack = option.id
-                        } label: {
-                            HStack {
-                                Text(option.name)
-                                Spacer()
-                                if player.currentAudioTrack == option.id { Image(systemName: "checkmark") }
-                            }
-                        }
-                    }
-                }
-                Section("Phụ đề") {
-                    ForEach(player.subtitleTrackOptions) { option in
-                        Button {
-                            player.currentSubtitleTrack = option.id
-                            // A subtitle from OpenSubtitles is drawn by the app: picking another track (or "Tắt")
-                            // replaces it.
-                            if LiveSubtitles.shared.existingID?.hasPrefix(OpenSubtitles.optionPrefix) == true {
-                                LiveSubtitles.shared.reset()
-                            }
-                            player.appDrawnSubtitleSource = nil
-                        } label: {
-                            HStack {
-                                Text(option.name)
-                                Spacer()
-                                if player.currentSubtitleTrack == option.id { Image(systemName: "checkmark") }
-                            }
-                        }
-                    }
-                    NavigationLink {
-                        SubtitleStyleView()
-                    } label: {
-                        SubtitleStyleSummary()
-                    }
-                }
-                OpenSubtitlesSection(player: player) { dismiss() }
-            }
-            .navigationTitle("Âm thanh & Phụ đề")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Xong") { dismiss() } }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
 }
 
 /// Contrast / brightness / hue / saturation / gamma sliders backed by VLCKit's `VLCAdjustFilter`.
@@ -1033,13 +1221,18 @@ private struct PlayerTimeRow: View {
     @ObservedObject var scrub: ScrubState
     let onScrub: (Double) -> Void
     let onCommit: (Double) -> Void
+    @AppStorage(PlayerSettings.remainingKey) private var showRemaining = false
 
     var body: some View {
         Text(Self.format(scrub.seeking ? Int32(scrub.value * Double(clock.duration)) : clock.time))
             .foregroundStyle(.white).font(.caption).monospacedDigit()
         SeekBar(progress: scrub.seeking ? scrub.value : clock.progress, tint: AnyShapeStyle(.tint), onScrub: onScrub, onCommit: onCommit)
             .overlay { SubtitleMarksBar(live: live).offset(y: 7).allowsHitTesting(false) }
-        Text(Self.format(clock.duration)).foregroundStyle(.white).font(.caption).monospacedDigit()
+        // Tap: total length ⇄ time left.
+        Text(showRemaining ? "-" + Self.format(max(0, clock.duration - clock.time)) : Self.format(clock.duration))
+            .foregroundStyle(.white).font(.caption).monospacedDigit()
+            .contentShape(Rectangle())
+            .onTapGesture { showRemaining.toggle() }
     }
 
     static func format(_ ms: Int32) -> String {
@@ -1057,7 +1250,7 @@ private struct LiveCueOverlay: View {
     var body: some View {
         VStack {
             Spacer()
-            if let cue = live.activeCue(at: Int(clock.time)) {
+            if let cue = live.activeCue(at: Int(clock.time) - live.delayMs) {
                 SubtitleLineView(text: cue.text)
                     .padding(.horizontal, 24)
             }
@@ -1085,6 +1278,30 @@ private struct LiveStatusBadge: View {
             }
             .allowsHitTesting(false)
         }
+    }
+}
+
+/// After an automatic resume: "Đang xem tiếp từ 12:34" with a "Xem từ đầu" button, for a few seconds.
+private struct StartOverBanner: View {
+    let timeText: String
+    let onStartOver: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Label("Xem tiếp từ \(timeText)", systemImage: "clock.arrow.circlepath")
+                .font(.subheadline)
+                .foregroundStyle(.white)
+            Button(action: onStartOver) {
+                Label("Xem từ đầu", systemImage: "backward.end.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Capsule().fill(.tint))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.leading, 14).padding(.trailing, 6).padding(.vertical, 6)
+        .background(Capsule().fill(Color.black.opacity(0.6)))
     }
 }
 
@@ -1153,6 +1370,8 @@ private final class GestureScratch {
     var speedBoostFrom: Float?
     var hideAt = Date.distantPast
     var hideTimerRunning = false
+    /// When the lock badge was last shown (it hides 2.5 s later unless shown again meanwhile).
+    var unlockShownAt: Date?
 }
 
 /// The gesture bubble's text; only `GestureHintView` observes it.

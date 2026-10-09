@@ -249,7 +249,13 @@ struct SmbFolderContent: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 4)
+            // The shadow comes from a plain shape behind the card: shadowing the picture itself rendered every
+            // card off-screen again on each frame of scrolling.
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(.secondarySystemBackground))
+                    .shadow(color: .black.opacity(0.16), radius: 6, x: 0, y: 3)
+            )
             Text(entry.name).font(.footnote.weight(.medium)).lineLimit(2).multilineTextAlignment(.leading)
                 .padding(.horizontal, 2)
         }

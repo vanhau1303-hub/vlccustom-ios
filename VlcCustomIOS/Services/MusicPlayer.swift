@@ -56,7 +56,7 @@ final class MusicQueue: ObservableObject {
 
 /// A dedicated `VLCMediaPlayer` for audio, separate from the video player, configured for background playback and
 /// lock-screen / Control Center controls (the iOS equivalent of Android's `MediaSession` + notification).
-final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
+final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate, RemoteControllable {
     static let shared = MusicPlayer()
 
     let mediaPlayer = VLCMediaPlayer()
@@ -158,21 +158,7 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     }
 
     private func configureRemoteCommands() {
-        let center = MPRemoteCommandCenter.shared()
-        center.playCommand.addTarget { [weak self] _ in
-            if let player = self?.mediaPlayer { VLCControl.play(player) }
-            return .success
-        }
-        center.pauseCommand.addTarget { [weak self] _ in self?.mediaPlayer.pause(); return .success }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlayPause(); return .success }
-        center.nextTrackCommand.addTarget { [weak self] _ in self?.playNext(); return .success }
-        center.previousTrackCommand.addTarget { [weak self] _ in self?.playPrevious(); return .success }
-        center.changePlaybackPositionCommand.addTarget { [weak self] event in
-            guard let self, let event = event as? MPChangePlaybackPositionCommandEvent, self.duration > 0 else { return .commandFailed }
-            let player = self.mediaPlayer
-            VLCControl.run { player.time = VLCTime(int: Int32(event.positionTime * 1000)) }
-            return .success
-        }
+        RemoteCommands.shared.music = self
     }
 
     private func updateNowPlaying() {
@@ -186,6 +172,20 @@ final class MusicPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    // MARK: - Lock screen buttons (RemoteControllable)
+
+    func remotePlay() { VLCControl.play(mediaPlayer) }
+    func remotePause() { mediaPlayer.pause() }
+    func remoteTogglePlayPause() { togglePlayPause() }
+    func remoteNext() { playNext() }
+    func remotePrevious() { playPrevious() }
+
+    func remoteSeek(toSeconds seconds: Double) {
+        guard duration > 0 else { return }
+        let player = mediaPlayer
+        VLCControl.run { player.time = VLCTime(int: Int32(seconds * 1000)) }
     }
 
     // MARK: - VLCMediaPlayerDelegate

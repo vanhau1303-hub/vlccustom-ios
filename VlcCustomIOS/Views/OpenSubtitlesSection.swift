@@ -7,6 +7,8 @@ struct OpenSubtitlesSection: View {
     let onAdded: () -> Void
     @ObservedObject private var live = LiveSubtitles.shared
     @AppStorage("opensubtitles_langs") private var languages = "vi,en"
+    /// A subtitle in another language is translated into Vietnamese by the translator chosen for AI subtitles.
+    @AppStorage("opensubtitles_translate") private var translate = true
 
     @State private var results: [OpenSubtitles.Result]?
     @State private var searching = false
@@ -24,6 +26,7 @@ struct OpenSubtitlesSection: View {
             Picker("Ngôn ngữ", selection: $languages) {
                 ForEach(Self.languageChoices, id: \.code) { Text($0.label).tag($0.code) }
             }
+            Toggle("Dịch sang tiếng Việt nếu là ngôn ngữ khác", isOn: $translate)
             Button { search() } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass.circle.fill").font(.title3)
@@ -117,8 +120,11 @@ struct OpenSubtitlesSection: View {
                     // Drawn by the app like the AI subtitles; VLC's own subtitle would show underneath.
                     player.currentSubtitleTrack = -1
                     player.appDrawnSubtitleSource = source
+                    // Not Vietnamese: translated line by line in place (same queue as the AI subtitles).
+                    let target = translate && result.language != "vi" ? "vi" : nil
                     LiveSubtitles.shared.startFromExisting(source: source, optionID: OpenSubtitles.optionPrefix + result.fileId,
-                                                           lines: lines, translateTo: nil, dual: false)
+                                                           lines: lines, translateTo: target,
+                                                           dual: target != nil && SpeechSettings.shared.dualSubtitles)
                 } else {
                     // A format the app does not read: VLC shows it as a subtitle track.
                     LiveSubtitles.shared.reset()

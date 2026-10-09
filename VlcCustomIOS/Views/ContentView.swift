@@ -131,21 +131,42 @@ private enum LibraryScreen: String, Identifiable, CaseIterable {
 
 struct SettingsView: View {
     @State private var library: LibraryScreen?
-    @State private var thumbnailBytes: Int64 = 0
-    @AppStorage(ThumbnailPolicy.fastKey) private var fastThumbnails = true
-    @AppStorage(ThumbnailPolicy.animatedKey) private var animatedThumbnails = false
-    @AppStorage(ThumbnailBackfill.enabledKey) private var backfillThumbnails = true
     @ObservedObject private var backfill = ThumbnailBackfill.shared
+    @ObservedObject private var history = WatchHistory.shared
 
     var body: some View {
         NavigationStack {
             List {
-                ThemeSettingsSection()
                 Section {
                     NavigationLink {
-                        SubtitleStyleView()
+                        ContinueWatchingView()
                     } label: {
-                        IconLabel("Kiểu chữ phụ đề", systemName: "captions.bubble.fill", color: .mint)
+                        HStack {
+                            IconLabel("Đang xem dở", systemName: "clock.arrow.circlepath", color: .orange)
+                            Spacer()
+                            let count = history.inProgress.count
+                            if count > 0 { Text("\(count)").foregroundStyle(.secondary) }
+                        }
+                    }
+                }
+                Section {
+                    NavigationLink { AppearanceSettingsView() } label: {
+                        IconLabel("Giao diện", systemName: "paintbrush.fill", color: AppTheme.shared.accent)
+                    }
+                    NavigationLink { PlayerSettingsView() } label: {
+                        IconLabel("Trình phát", systemName: "play.rectangle.fill", color: .blue)
+                    }
+                    NavigationLink { SubtitleSettingsView() } label: {
+                        IconLabel("Phụ đề", systemName: "captions.bubble.fill", color: .mint)
+                    }
+                    NavigationLink { ThumbnailSettingsView() } label: {
+                        HStack {
+                            IconLabel("Thumbnail", systemName: "photo.stack.fill", color: .indigo)
+                            Spacer()
+                            if backfill.phase != .idle {
+                                Text("Đang chạy nền").font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
                 Section("Thư viện") {
@@ -163,61 +184,9 @@ struct SettingsView: View {
                     }
                 }
                 Section {
-                    Toggle(isOn: $fastThumbnails) {
-                        IconLabel("Ưu tiên tạo thumbnail nhanh", systemName: "hare.fill", color: .orange)
+                    NavigationLink { DiagnosticsSettingsView() } label: {
+                        IconLabel("Chẩn đoán", systemName: "stethoscope", color: .green)
                     }
-                    .onChange(of: fastThumbnails) { on in
-                        ThumbnailPolicy.shared.fastEnabled = on
-                        Task { await ThumbnailService.shared.policyChanged() }
-                    }
-                } footer: {
-                    Text("Tạo 4 thumbnail cùng lúc và tạo trước cho cả thư mục. Khi mở video sẽ tự trở về chế độ bình thường (tạm dừng tạo thumbnail) để video không bị giật, đóng video thì chạy nhanh lại.")
-                }
-                Section {
-                    Toggle(isOn: $backfillThumbnails) {
-                        IconLabel("Tạo thumbnail nền", systemName: "square.stack.3d.down.right.fill", color: .indigo)
-                    }
-                    .onChange(of: backfillThumbnails) { on in backfill.setEnabled(on) }
-                    if backfillThumbnails {
-                        ThumbnailBackfillStatusRow()
-                    }
-                    NavigationLink {
-                        ThumbnailBackfillFoldersView()
-                    } label: {
-                        HStack {
-                            IconLabel("Thư mục đã xem", systemName: "folder.fill", color: .blue)
-                            Spacer()
-                            Text("\(backfill.visitedCount)").foregroundStyle(.secondary)
-                        }
-                    }
-                } header: {
-                    Text("Thumbnail nền")
-                } footer: {
-                    Text("Tự tạo thumbnail (thường + động) còn thiếu cho các thư mục SMB đã mở, từng cái một. Thư mục đang xem luôn được làm trước, sau đó theo thứ tự đã sắp xếp trong \"Thư mục đã xem\". Khi đang xem video sẽ tự chờ.")
-                }
-                Section {
-                    Toggle(isOn: $animatedThumbnails) {
-                        IconLabel("Thumbnail động", systemName: "play.rectangle.on.rectangle.fill", color: .pink)
-                    }
-                } footer: {
-                    Text("Video trong thư mục SMB lần lượt hiện 6 cảnh (10% → 85% thời lượng). Các cảnh được Thumbnail nền tạo sẵn (kể cả khi tắt mục này), nên bật lên là có ngay; khoảng 150KB mỗi video.")
-                }
-                Section {
-                    HStack {
-                        IconLabel("Thumbnail đã lưu", systemName: "photo.stack.fill", color: .teal)
-                        Spacer()
-                        Text(ByteCountFormatter.string(fromByteCount: thumbnailBytes, countStyle: .file)).foregroundStyle(.secondary)
-                    }
-                    Button("Xoá thumbnail", role: .destructive) {
-                        Task {
-                            await ThumbnailService.shared.clearAll()
-                            thumbnailBytes = ThumbnailService.diskUsage()
-                        }
-                    }
-                } footer: {
-                    Text("Thumbnail được lưu trong bộ nhớ của ứng dụng, mở lại thư mục là hiện ngay, không phải tạo lại qua mạng.")
-                }
-                Section {
                     HStack {
                         IconLabel("Phiên bản", systemName: "info", color: .gray)
                         Spacer()
@@ -225,17 +194,8 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Section {
-                    ShareLink(item: DiagnosticsLogFile(), preview: SharePreview("vlc_diagnostics.log")) {
-                        IconLabel("Chia sẻ log chẩn đoán", systemName: "square.and.arrow.up", color: .green)
-                    }
-                    Button("Xoá log", role: .destructive) { PlaybackDiagnostics.clear() }
-                } footer: {
-                    Text("Nếu video không phát được, hãy thử phát lại (để lỗi ghi vào log) rồi chia sẻ log này để chẩn đoán đúng nguyên nhân.")
-                }
             }
             .navigationTitle("Cài đặt")
-            .task { thumbnailBytes = ThumbnailService.diskUsage() }
             .sheet(item: $library) { screen in
                 Group {
                     switch screen {

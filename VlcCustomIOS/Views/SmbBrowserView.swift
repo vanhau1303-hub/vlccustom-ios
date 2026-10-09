@@ -31,11 +31,19 @@ struct SmbBrowserView: View {
     @ObservedObject private var librarySettings = LibrarySettings.shared
     @State private var showScan = false
     @ObservedObject private var navigator = AppNavigator.shared
+    /// Reopening a folder (app start, Yêu thích): its last listing is shown while the connection comes up, instead
+    /// of the login form flashing up for a moment.
+    @State private var restoringHost: String?
+    /// The folder on screen is the saved listing: the server did not answer this time.
+    @State private var offline = false
+
+    /// The server being browsed — connected, or being reconnected with the saved listing on screen.
+    private var browsingHost: String? { connection?.host ?? restoringHost }
 
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 8) {
-                if connection == nil {
+                if browsingHost == nil {
                     Group {
                         connectForm
                         if !savedProfiles.isEmpty { savedServersRow }
@@ -72,7 +80,7 @@ struct SmbBrowserView: View {
             // connect form floating mid-screen.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             // Swipe in from the left edge = the back button: up one folder, or off the server from the share list.
-            .edgeSwipeBack(enabled: connection != nil) { path.isEmpty ? disconnect() : goUp() }
+            .edgeSwipeBack(enabled: browsingHost != nil) { path.isEmpty ? disconnect() : goUp() }
             .dismissesKeyboardOnTap()
             .navigationTitle("Mạng")
             .navigationBarTitleDisplayMode(.inline)
@@ -266,11 +274,21 @@ struct SmbBrowserView: View {
 
     @ViewBuilder
     private var list: some View {
+        if offline, browsingHost != nil {
+            HStack(spacing: 8) {
+                Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
+                Text("Chưa kết nối được máy chủ — đang hiện danh sách đã lưu.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Button("Thử lại") { Task { await load(force: true) } }.font(.footnote.weight(.semibold))
+            }
+            .padding(.horizontal)
+        }
         if loading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).padding(.top, 48)
-        } else if connection != nil && entries.isEmpty {
+        } else if browsingHost != nil && entries.isEmpty {
             ContentUnavailableFallback(title: "Trống", message: "Thư mục này trống.")
-        } else if let connection, let deepResults {
+        } else if let host = browsingHost, let deepResults {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     if deepSearching { ProgressView().scaleEffect(0.8) }
@@ -281,11 +299,11 @@ struct SmbBrowserView: View {
                     Button("Đóng") { cancelDeepSearch(); query = "" }.font(.footnote)
                 }
                 .padding(.horizontal)
-                SmbFolderContent(host: connection.host, entries: sortedGroups(deepResults), onOpen: open,
+                SmbFolderContent(host: host, entries: sortedGroups(deepResults), onOpen: open,
                                  onAddToPlaylist: { addingToPlaylist = $0 }, showsParentPath: true)
             }
-        } else if let connection {
-            SmbFolderContent(host: connection.host, entries: shownEntries, onOpen: open, onAddToPlaylist: { addingToPlaylist = $0 })
+        } else if let host = browsingHost {
+            SmbFolderContent(host: host, entries: shownEntries, onOpen: open, onAddToPlaylist: { addingToPlaylist = $0 })
                 // Pull down to read the folder again over SMB.
                 .refreshable { await load(force: true) }
                 .onAppear { recomputeShown() }
@@ -317,14 +335,26 @@ struct SmbBrowserView: View {
             var queue: [(path: String, depth: Int)] = [(root, 0)]
             var visited = 0
             while !queue.isEmpty, !Task.isCancelled, visited < 400, (deepResults?.count ?? 0) < 1000 {
-                let folder = queue.removeFirst()
-                visited += 1
-                guard let items = try? await connection.list(path: folder.path) else { continue }
+                // Four folders read at once (one at a time spent most of the search waiting on round trips).
+                let batch = Array(queue.prefix(4))
+                queue.removeFirst(batch.count)
+                visited += batch.count
+                let listed = await withTaskGroup(of: (Int, [SmbEntry]?).self) { group -> [(Int, [SmbEntry]?)] in
+                    for (i, folder) in batch.enumerated() {
+                        group.addTask { (i, try? await connection.list(path: folder.path)) }
+                    }
+                    var out: [(Int, [SmbEntry]?)] = []
+                    for await result in group { out.append(result) }
+                    return out.sorted { $0.0 < $1.0 }
+                }
                 if Task.isCancelled { break }
-                let hits = items.filter { $0.name.localizedCaseInsensitiveContains(term) }
-                if !hits.isEmpty { deepResults?.append(contentsOf: hits) }
-                if folder.depth < 8 {
-                    queue.append(contentsOf: items.filter(\.isDirectory).map { ($0.path, folder.depth + 1) })
+                for (i, items) in listed {
+                    guard let items else { continue }
+                    let hits = items.filter { $0.name.localizedCaseInsensitiveContains(term) }
+                    if !hits.isEmpty { deepResults?.append(contentsOf: hits) }
+                    if batch[i].depth < 8 {
+                        queue.append(contentsOf: items.filter(\.isDirectory).map { ($0.path, batch[i].depth + 1) })
+                    }
                 }
             }
             if !Task.isCancelled { deepSearching = false }
@@ -350,6 +380,8 @@ struct SmbBrowserView: View {
         Task {
             do {
                 let conn = try await SmbRegistry.shared.connect(host: host, username: username, password: password, domain: domain)
+                restoringHost = nil
+                offline = false
                 connection = conn
                 ResumeStore.saveFolder(host: conn.host, path: "")
                 SmbServerStore.addOrUpdate(SmbServerProfile(host: host, username: username, domain: domain), password: password)
@@ -372,26 +404,52 @@ struct SmbBrowserView: View {
             domain = profile.domain
             password = SmbServerStore.password(for: profile.host)
         }
-        connecting = true
         status = nil
+        query = ""
+        cancelDeepSearch()
+        // The folder's last listing on screen at once (thumbnails come from the disk cache), connection meanwhile.
+        if connection?.host.lowercased() != jump.host.lowercased() {
+            connection = nil
+            restoringHost = jump.host
+        }
+        path = jump.path
+        if let cached = await SmbListingCache.get(host: jump.host, path: jump.path) {
+            entries = cached
+            recomputeShown()
+        } else {
+            entries = []
+        }
+        connecting = true
         let conn = await SmbRegistry.shared.getOrReconnect(jump.host)
         connecting = false
         guard let conn else {
+            restoringHost = nil
             connection = nil
+            entries = []
             status = "Không kết nối được \(jump.host). Kiểm tra máy tính đang bật và cùng mạng Wi-Fi."
             return
         }
         connection = conn
-        path = jump.path
+        restoringHost = nil
         ResumeStore.saveFolder(host: conn.host, path: jump.path)
-        query = ""
         await load()
     }
 
     /// Shows the folder's last listing at once (`SmbListingCache`), then the fresh one read over SMB replaces it if
     /// anything changed. `force`: pull-to-refresh — wait for the fresh listing.
     private func load(force: Bool = false) async {
-        guard let connection else { return }
+        guard let connection else {
+            // Still reconnecting (moved to another folder meanwhile): its saved listing, if there is one.
+            if let host = restoringHost {
+                let folder = path
+                let cached = await SmbListingCache.get(host: host, path: folder)
+                if folder == path {
+                    entries = cached ?? []
+                    recomputeShown()
+                }
+            }
+            return
+        }
         let host = connection.host
         let folder = path
         if !force, let cached = await SmbListingCache.get(host: host, path: folder), folder == path {
@@ -408,17 +466,28 @@ struct SmbBrowserView: View {
             if fresh != entries { entries = fresh }
             recomputeShown()
             status = nil
+            offline = false
             SmbListingCache.put(host: host, path: folder, entries: fresh)
         } catch {
-            if folder == path, entries.isEmpty || force { status = error.localizedDescription }
+            guard folder == path else { return }
+            if entries.isEmpty {
+                // Nothing saved to show: back to the login form with the reason.
+                status = error.localizedDescription
+                if !force {
+                    self.connection = nil
+                    restoringHost = nil
+                }
+            } else {
+                offline = true
+            }
         }
         if folder == path { loading = false }
     }
 
     private func open(_ entry: SmbEntry) {
-        guard let connection else { return }
+        guard let host = browsingHost else { return }
         let siblings = deepResults.map(sortedGroups) ?? shownEntries
-        switch SmbOpener.open(entry, siblings: siblings, host: connection.host, label: "SMB: \(connection.host)/\(path)") {
+        switch SmbOpener.open(entry, siblings: siblings, host: host, label: "SMB: \(host)/\(path)") {
         case .folder(let newPath):
             cancelDeepSearch()
             query = ""
@@ -446,6 +515,8 @@ struct SmbBrowserView: View {
     private func disconnect() {
         ResumeStore.saveFolder(host: nil, path: "")
         cancelDeepSearch()
+        restoringHost = nil
+        offline = false
         connection = nil
         entries = []
         path = ""

@@ -14,6 +14,8 @@ struct VideoThumbnailView: View {
     @ObservedObject private var events = ThumbnailEvents.shared
     @AppStorage(ThumbnailPolicy.animatedKey) private var animated = false
     @ObservedObject private var forced = ForcedThumbnails.shared
+    /// How far it was watched: a bar along the bottom, a check mark once finished.
+    @ObservedObject private var history = WatchHistory.shared
     @State private var made = 0
 
     var body: some View {
@@ -30,15 +32,32 @@ struct VideoThumbnailView: View {
             }
         }
         .frame(width: size * 16 / 9, height: size)
+        .overlay(alignment: .bottomLeading) {
+            if let fraction = history.progress(for: source).fraction {
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(Color.black.opacity(0.45))
+                    Rectangle().fill(.tint).frame(width: size * 16 / 9 * fraction)
+                }
+                .frame(height: max(3, size * 0.045))
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(alignment: .topTrailing) {
-            // "Buộc lấy thumbnail" running in the background for this video / failed.
+            // "Buộc lấy thumbnail" running in the background for this video / failed; otherwise "Đã xem".
             if forced.running.contains(source) {
                 ProgressView().controlSize(.small).padding(4)
                     .background(.ultraThinMaterial, in: Circle()).padding(4)
             } else if forced.failed.contains(source) {
                 Image(systemName: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
                     .padding(4).background(.ultraThinMaterial, in: Circle()).padding(4)
+            } else if history.progress(for: source).watched {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: max(13, size * 0.17), weight: .semibold))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color.green)
+                    .shadow(color: .black.opacity(0.4), radius: 2)
+                    .padding(5)
+                    .accessibilityLabel("Đã xem")
             }
         }
         // Thumbnail động: only while the cell is on screen (the task stops when it scrolls away), and only once its
