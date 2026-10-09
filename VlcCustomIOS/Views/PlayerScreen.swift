@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import MobileVLCKit
 import UIKit
@@ -459,9 +460,16 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         }
     }
 
+    private var styleObserver: AnyCancellable?
+
     override init() {
         super.init()
         mediaPlayer.delegate = self
+        // Subtitles VLC draws itself (tracks in the file) follow "Kiểu chữ phụ đề", also when it changes mid-video.
+        applySubtitleStyle()
+        styleObserver = SubtitleStyle.shared.changed
+            .debounce(for: .milliseconds(150), scheduler: DispatchQueue.main)
+            .sink { [weak self] in self?.applySubtitleStyle() }
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(didEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
         center.addObserver(self, selector: #selector(willEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
@@ -700,8 +708,14 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         set { mediaPlayer.currentAudioTrackIndex = newValue; objectWillChange.send() }
     }
 
-    /// A downloaded subtitle file (OpenSubtitles) becomes a subtitle track of this video and is shown. Remembered so it
-    /// comes back when the video is reopened after the app was in the background.
+    private func applySubtitleStyle() {
+        let player = mediaPlayer
+        let settings = SubtitleStyle.shared.vlcSettings
+        VLCControl.run { SubtitleStyle.apply(settings, to: player) }
+    }
+
+    /// A downloaded subtitle the app cannot read itself (OpenSubtitles' rare formats) becomes a subtitle track of this
+    /// video, drawn by VLC. Remembered so it comes back when the video is reopened after the app was in the background.
     func addSubtitleFile(_ url: URL) {
         if let source = currentSource { addedSubtitles[source] = url }
         let player = mediaPlayer
@@ -709,6 +723,8 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.objectWillChange.send() }
     }
     private var addedSubtitles: [String: URL] = [:]
+    /// The video whose subtitle (from OpenSubtitles) the app draws itself — VLC's own subtitle stays off for it.
+    var appDrawnSubtitleSource: String?
 
     var currentSubtitleTrack: Int32 {
         get { mediaPlayer.currentVideoSubTitleIndex }
@@ -795,6 +811,12 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             if let openedAt = self.openedAt, now > 0 {
                 self.openedAt = nil
                 PlaybackDiagnostics.append(String(format: "player: playing after %.1fs", Date().timeIntervalSince(openedAt)))
+                // Reopened (after the background) while the app draws a downloaded subtitle: the file's default
+                // subtitle track, picked again by VLC, would show underneath.
+                if let source = self.currentSource, self.appDrawnSubtitleSource == source {
+                    let player = self.mediaPlayer
+                    VLCControl.run { player.currentVideoSubTitleIndex = -1 }
+                }
             }
             if Date().timeIntervalSince(self.lastPositionSave) > 15 {
                 self.lastPositionSave = Date()
@@ -853,6 +875,12 @@ struct TrackPickerSheet: View {
                     ForEach(player.subtitleTrackOptions) { option in
                         Button {
                             player.currentSubtitleTrack = option.id
+                            // A subtitle from OpenSubtitles is drawn by the app: picking another track (or "Tắt")
+                            // replaces it.
+                            if LiveSubtitles.shared.existingID?.hasPrefix(OpenSubtitles.optionPrefix) == true {
+                                LiveSubtitles.shared.reset()
+                            }
+                            player.appDrawnSubtitleSource = nil
                         } label: {
                             HStack {
                                 Text(option.name)
@@ -860,6 +888,11 @@ struct TrackPickerSheet: View {
                                 if player.currentSubtitleTrack == option.id { Image(systemName: "checkmark") }
                             }
                         }
+                    }
+                    NavigationLink {
+                        SubtitleStyleView()
+                    } label: {
+                        SubtitleStyleSummary()
                     }
                 }
                 OpenSubtitlesSection(player: player) { dismiss() }
@@ -1016,7 +1049,7 @@ private struct PlayerTimeRow: View {
     }
 }
 
-/// The AI subtitle line on screen, following the clock.
+/// The app's subtitle line on screen (AI subtitles, subtitles from OpenSubtitles), following the clock.
 private struct LiveCueOverlay: View {
     @ObservedObject var clock: PlaybackClock
     @ObservedObject var live: LiveSubtitles
@@ -1025,13 +1058,7 @@ private struct LiveCueOverlay: View {
         VStack {
             Spacer()
             if let cue = live.activeCue(at: Int(clock.time)) {
-                Text(cue.text)
-                    .multilineTextAlignment(.center)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(Color.black.opacity(0.65))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                SubtitleLineView(text: cue.text)
                     .padding(.horizontal, 24)
             }
         }

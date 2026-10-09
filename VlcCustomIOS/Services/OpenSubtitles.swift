@@ -6,9 +6,12 @@ import Foundation
 /// - Exact match: the file's OpenSubtitles hash (size + the first and last 64 KB, read over SMB).
 /// - Title: a series episode is searched by title + season + episode (the language filter does not work together
 ///   with those, so languages are filtered here); a movie by title per wanted language (one language per request).
-/// - Download: the gzip link, unpacked and saved in the app's cache as a subtitle file the player loads like any
-///   other subtitle track.
+/// - Download: the gzip link, unpacked and saved in the app's cache, then shown by the app itself like the AI
+///   subtitles (same look, set in "Kiểu chữ phụ đề"); a format the app cannot read goes to VLC as a subtitle track.
 enum OpenSubtitles {
+    /// `LiveSubtitles.existingID` of a downloaded subtitle: this + the file id.
+    static let optionPrefix = "opensubtitles:"
+
     struct Result: Identifiable, Hashable {
         let fileId: String
         let language: String       // "vi", "en"…
@@ -126,6 +129,19 @@ enum OpenSubtitles {
         try Data(text.utf8).write(to: file, options: .atomic)
         PlaybackDiagnostics.append("opensubtitles: \(result.fileId) (\(result.language)) \(result.release)")
         return file
+    }
+
+    /// The lines of a downloaded file (saved as UTF-8 by `download`); empty for a format the app does not read.
+    static func lines(of file: URL) -> [TimedLine] {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+        let ext = file.pathExtension.lowercased()
+        let raw: [TimedLine]
+        switch ext {
+        case "ass", "ssa": raw = ExistingSubtitles.parseAss(text)
+        case "srt", "vtt": raw = ExistingSubtitles.parseSrtOrVtt(text)
+        default: return []
+        }
+        return ExistingSubtitles.finish(raw)
     }
 
     private static let cacheDirectory: URL = {

@@ -154,6 +154,13 @@ struct SpeechSubtitleDialog: View {
                 } footer: {
                     Text("Phụ đề được tạo dần khi video đang phát và lưu lại — xem tiếp lần sau sẽ tiếp tục thay vì làm lại từ đầu.")
                 }
+                Section {
+                    NavigationLink {
+                        SubtitleStyleView()
+                    } label: {
+                        SubtitleStyleSummary()
+                    }
+                }
             }
             .navigationTitle("Phụ đề AI")
             .navigationBarTitleDisplayMode(.inline)

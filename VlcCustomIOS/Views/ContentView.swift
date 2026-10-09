@@ -141,6 +141,13 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 ThemeSettingsSection()
+                Section {
+                    NavigationLink {
+                        SubtitleStyleView()
+                    } label: {
+                        IconLabel("Kiểu chữ phụ đề", systemName: "captions.bubble.fill", color: .mint)
+                    }
+                }
                 Section("Thư viện") {
                     ForEach(LibraryScreen.allCases) { screen in
                         Button { library = screen } label: {

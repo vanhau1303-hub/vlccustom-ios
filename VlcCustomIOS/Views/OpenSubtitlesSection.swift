@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// In "Âm thanh & Phụ đề": find subtitles for the video on OpenSubtitles (no key needed), pick one, and it is
-/// added to the player as an ordinary subtitle track (VLC draws it, like a subtitle inside the file).
+/// In "Âm thanh & Phụ đề": find subtitles for the video on OpenSubtitles (no key needed), pick one, and it is shown
+/// by the app like the AI subtitles (same look, "Kiểu chữ phụ đề"), with VLC's own subtitle track turned off.
 struct OpenSubtitlesSection: View {
     @ObservedObject var player: VlcPlayerController
     let onAdded: () -> Void
+    @ObservedObject private var live = LiveSubtitles.shared
     @AppStorage("opensubtitles_langs") private var languages = "vi,en"
 
     @State private var results: [OpenSubtitles.Result]?
@@ -50,7 +51,7 @@ struct OpenSubtitlesSection: View {
         } header: {
             Text("Tìm phụ đề trên mạng")
         } footer: {
-            Text("Nguồn OpenSubtitles, không cần tài khoản. Dấu ✓ = khớp đúng file đang xem (đúng bản phim, đúng thời gian). Phụ đề tải về được lưu lại.")
+            Text("Nguồn OpenSubtitles, không cần tài khoản. \"Khớp file\" = đúng bản phim đang xem (đúng thời gian). Phụ đề tải về được lưu lại và hiện giống phụ đề AI — chỉnh cỡ chữ, màu, font ở \"Kiểu chữ phụ đề\".")
         }
     }
 
@@ -74,7 +75,11 @@ struct OpenSubtitlesSection: View {
                 .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
-            if downloading == result.fileId { ProgressView() }
+            if downloading == result.fileId {
+                ProgressView()
+            } else if live.existingID == OpenSubtitles.optionPrefix + result.fileId {
+                Image(systemName: "checkmark").foregroundStyle(.tint)
+            }
         }
         .contentShape(Rectangle())
     }
@@ -107,9 +112,19 @@ struct OpenSubtitlesSection: View {
         Task {
             do {
                 let file = try await OpenSubtitles.download(result)
-                // The AI / translated overlay would sit on top of it.
-                LiveSubtitles.shared.reset()
-                player.addSubtitleFile(file)
+                let lines = OpenSubtitles.lines(of: file)
+                if let source = PlaybackQueue.shared.current?.source, !lines.isEmpty {
+                    // Drawn by the app like the AI subtitles; VLC's own subtitle would show underneath.
+                    player.currentSubtitleTrack = -1
+                    player.appDrawnSubtitleSource = source
+                    LiveSubtitles.shared.startFromExisting(source: source, optionID: OpenSubtitles.optionPrefix + result.fileId,
+                                                           lines: lines, translateTo: nil, dual: false)
+                } else {
+                    // A format the app does not read: VLC shows it as a subtitle track.
+                    LiveSubtitles.shared.reset()
+                    player.appDrawnSubtitleSource = nil
+                    player.addSubtitleFile(file)
+                }
                 downloading = nil
                 onAdded()
             } catch {

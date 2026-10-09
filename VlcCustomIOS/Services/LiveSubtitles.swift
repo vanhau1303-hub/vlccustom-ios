@@ -96,6 +96,8 @@ final class LiveSubtitles: ObservableObject {
     enum Mode { case speech, existing }
     /// What the current subtitles are: recognized from the audio, or a track / file translated.
     private(set) var mode: Mode?
+    /// Which existing subtitles are shown (`mode == .existing`): the track / file, or an OpenSubtitles download.
+    @Published private(set) var existingID: String?
 
     /// For the marks under the seek bar: the stretches already recognized and where lines still wait for their
     /// translation, as fractions of the video.
@@ -186,6 +188,7 @@ final class LiveSubtitles: ObservableObject {
         errorMessage = nil
         self.source = source
         mode = .existing
+        existingID = optionID
         marksDurationMs = max(lines.last?.endMs ?? 0, 1)
         let key = Self.cacheKey(source: source + "#" + optionID, language: nil,
                                 translateTo: translateTo.map { $0 + "|" + SpeechSettings.shared.translatorSignature }, dual: dual)
@@ -250,6 +253,7 @@ final class LiveSubtitles: ObservableObject {
         errorMessage = nil
         self.source = nil
         mode = nil
+        existingID = nil
         marks = SubtitleMarks()
         marksDurationMs = 0
     }
