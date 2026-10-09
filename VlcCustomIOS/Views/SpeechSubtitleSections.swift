@@ -33,6 +33,13 @@ struct SpeechSubtitleSections: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(live.running ? Color.red : nil)
+                // On this one row, not the group: modifiers on a group in a list run once per section.
+                // The choices last used for this folder (a series): language, translator, style, model.
+                .onAppear { settings.applyFolderPreferences(for: source) }
+                // Load an already-downloaded model while the user is still picking options.
+                .task(id: settings.modelSize) {
+                    await WhisperEngine.shared.preloadIfDownloaded(model: settings.modelSize.rawValue)
+                }
                 if let status = live.status {
                     HStack { ProgressView(); Text(status).font(.footnote) }
                 }
@@ -157,12 +164,6 @@ struct SpeechSubtitleSections: View {
                     }
                 }
             }
-        }
-        // The choices last used for this folder (a series): language, translator, style, model.
-        .onAppear { settings.applyFolderPreferences(for: source) }
-        // Load an already-downloaded model while the user is still picking options.
-        .task(id: settings.modelSize) {
-            await WhisperEngine.shared.preloadIfDownloaded(model: settings.modelSize.rawValue)
         }
     }
 

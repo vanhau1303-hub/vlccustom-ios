@@ -36,7 +36,7 @@ struct VideoThumbnailView: View {
             if let fraction = history.progress(for: source).fraction {
                 ZStack(alignment: .leading) {
                     Rectangle().fill(Color.black.opacity(0.45))
-                    Rectangle().fill(.tint).frame(width: size * 16 / 9 * fraction)
+                    Rectangle().fill(.tint).frame(width: size * 16 / 9 * CGFloat(fraction))
                 }
                 .frame(height: max(3, size * 0.045))
             }
