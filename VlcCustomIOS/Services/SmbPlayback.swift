@@ -33,12 +33,12 @@ enum SmbRoutePreferences {
 /// VLCPlaybackService.mediaOptionsDictionary) — the setup that plays TS/MKV smoothly on the same devices:
 /// - avcodec-skiploopfilter=1: skip the deblocking filter on non-reference frames — the big CPU saving when H.264 /
 ///   HEVC is decoded in software (common for MKV/TS), with no visible difference;
-/// - network-caching=999ms (was 2000 here): faster start and seeks over the network;
+/// - network-caching: Cài đặt → Trình phát → Bộ đệm mạng (667 ms by default; 999 before, 2000 at first);
 /// - codec left automatic: VideoToolbox hardware decoding when the stream allows it, avcodec otherwise.
 enum VLCTuning {
     static func apply(to media: VLCMedia, network: Bool = true) {
         media.addOption(":avcodec-skiploopfilter=1")
-        if network { media.addOption(":network-caching=999") }
+        if network { media.addOption(":network-caching=\(PlayerSettings.networkCachingMs)") }
     }
 }
 

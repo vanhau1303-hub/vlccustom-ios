@@ -577,6 +577,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         mediaPlayer.delegate = self
         // Subtitles VLC draws itself (tracks in the file) follow "Kiểu chữ phụ đề", also when it changes mid-video.
         applySubtitleStyle()
+        startStallWatch()
         styleObserver = SubtitleStyle.shared.changed
             .debounce(for: .milliseconds(150), scheduler: DispatchQueue.main)
             .sink { [weak self] in self?.applySubtitleStyle() }
@@ -678,6 +679,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     deinit {
+        stallTimer?.invalidate()
         // Never release a player that may still be stopping — see VLCControl.
         VLCControl.retire(mediaPlayer)
     }
@@ -720,6 +722,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         resumedFrom = nil
         let player = mediaPlayer
         VLCControl.run { player.time = VLCTime(int: 0) }
+        lastSeekAt = Date()
     }
 
     /// "Xem tiếp": jump to where it was left off (a couple of seconds earlier, to pick the thread up again).
@@ -729,6 +732,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         let target = max(0, ms - 2000)
         let player = mediaPlayer
         VLCControl.run { player.time = VLCTime(int: target) }
+        lastSeekAt = Date()
     }
 
     /// Saves where the current file is (see `PositionStore`).
@@ -776,8 +780,11 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
             savePosition()
             currentSource = item.source
             subtitleDelayMs = 0
+            stallsThisVideo = 0
         }
         openedAt = Date()
+        lastProgressAt = Date()
+        inStall = false
         playGeneration += 1
         let generation = playGeneration
         isLoading = true
@@ -842,16 +849,20 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     func seek(to fraction: Double) {
         let player = mediaPlayer
         VLCControl.run { player.position = Float(fraction) }
+        lastSeekAt = Date()
     }
 
     // MARK: - Live seeking (a finger on the video or on the seek bar)
 
     /// The newest spot the finger asked for, not sent to libVLC yet.
     private var scrubTarget: Int32?
-    /// The seek libVLC is doing now: done when it reports a time near it (or after 0.6 s).
+    /// The seek libVLC is doing now: done when it reports a time near it (or after 0.35 s).
     private var scrubInFlight: (target: Int32, at: Date)?
     private var scrubRetry: DispatchWorkItem?
     private var lastScrubSent: Int32?
+    /// The longest a live seek holds the next one back (0.6 s at first; a seek on the home network mostly lands
+    /// sooner, and libVLC reporting the new time releases the next one earlier anyway).
+    private static let scrubTimeout: TimeInterval = 0.35
 
     /// The finger moved: the picture follows it — one seek at a time and only to the newest spot. (Seeking only on
     /// release left the picture standing still during the whole drag; a seek per movement would pile up in libVLC.)
@@ -864,7 +875,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         guard let target = scrubTarget else { return }
         if let flight = scrubInFlight {
             let elapsed = Date().timeIntervalSince(flight.at)
-            if elapsed < 0.6 {
+            if elapsed < Self.scrubTimeout {
                 // Sent when libVLC reports the previous one done, or when that takes too long.
                 if scrubRetry == nil {
                     let work = DispatchWorkItem { [weak self] in
@@ -873,15 +884,16 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
                         self?.sendScrubIfReady()
                     }
                     scrubRetry = work
-                    DispatchQueue.main.asyncAfter(deadline: .now() + (0.6 - elapsed), execute: work)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + (Self.scrubTimeout - elapsed), execute: work)
                 }
                 return
             }
         }
         scrubTarget = nil
         // Barely moved since the last one: not worth a seek (the exact spot is sent on release).
-        if let last = lastScrubSent, abs(Int(last) - Int(target)) < 300 { return }
+        if let last = lastScrubSent, abs(Int(last) - Int(target)) < 250 { return }
         scrubInFlight = (target, Date())
+        lastSeekAt = Date()
         lastScrubSent = target
         let player = mediaPlayer
         VLCControl.run { player.time = VLCTime(int: target) }
@@ -914,7 +926,46 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
 
     private func showSeekTarget(_ target: Int32) {
         pendingSeek = (target, Date().addingTimeInterval(2.5))
+        lastSeekAt = Date()
         time = target
+    }
+
+    // MARK: - Stall watch
+    //
+    // A smaller network buffer starts and seeks faster but has less to fall back on. Playing with the time standing
+    // still for 1.5 s (not paused, not just seeked or opened) is a stall; two in one video raise the buffer a step
+    // for the next videos (Cài đặt → Trình phát → Bộ đệm mạng).
+
+    private var lastSeekAt = Date.distantPast
+    private var lastProgressAt = Date()
+    private var lastProgressMs: Int32 = -1
+    private var stallsThisVideo = 0
+    private var inStall = false
+    private var stallTimer: Timer?
+
+    private func startStallWatch() {
+        stallTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.checkStall() }
+    }
+
+    private func noteProgress(_ now: Int32) {
+        guard now != lastProgressMs else { return }
+        lastProgressMs = now
+        lastProgressAt = Date()
+        inStall = false
+    }
+
+    private func checkStall() {
+        guard isPlaying, !isLoading, !soundOnly, !inStall,
+              UIApplication.shared.applicationState == .active,
+              pendingSeek == nil, scrubInFlight == nil,
+              Date().timeIntervalSince(lastSeekAt) > 3,
+              Date().timeIntervalSince(lastProgressAt) > 1.5 else { return }
+        inStall = true
+        stallsThisVideo += 1
+        PlaybackDiagnostics.append("player: stalled waiting for data (\(stallsThisVideo) in this video, buffer \(PlayerSettings.networkCachingMs) ms)")
+        if stallsThisVideo == 2, let raised = PlayerSettings.raiseCaching() {
+            PlaybackDiagnostics.append("player: network buffer raised to \(raised) ms for the next videos")
+        }
     }
 
     func stop() {
@@ -1123,6 +1174,7 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         DispatchQueue.main.async {
             let previous = self.time
             let now = self.mediaPlayer.time.intValue
+            self.noteProgress(now)
             // A live seek got there: the next one can go.
             if let flight = self.scrubInFlight, Date().timeIntervalSince(flight.at) > 0.08,
                abs(Int(now) - Int(flight.target)) < 2500 {

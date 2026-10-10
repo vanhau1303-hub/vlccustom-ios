@@ -7,7 +7,19 @@ enum PlayerSettings {
     static let doubleTapKey = "player_double_tap_seconds"
     static let remainingKey = "player_show_remaining"
     static let backgroundAudioKey = "player_background_audio"
+    static let cachingKey = "player_network_caching"
     static let doubleTapChoices = [10, 15, 30]
+
+    /// How much video libVLC reads ahead before showing a picture (after opening and after every seek). 667 ms —
+    /// VLC's own "low latency" preset — is a third quicker than the 999 ms used before and still covers Wi-Fi
+    /// hiccups at home; a video that stalls twice moves the next ones a step up (`raiseCaching`).
+    static let cachingChoices: [(ms: Int, label: String)] = [
+        (333, "Thấp · 0,3 giây"),
+        (667, "Vừa · 0,7 giây (đề xuất)"),
+        (999, "Cao · 1 giây (như trước)"),
+        (1667, "Rất cao · 1,7 giây (Wi-Fi yếu)"),
+    ]
+    static let defaultCachingMs = 667
 
     /// Open a video where it was left off (a "Xem từ đầu" button shows for a few seconds) instead of offering to.
     static var autoResume: Bool { UserDefaults.standard.object(forKey: autoResumeKey) as? Bool ?? true }
@@ -20,6 +32,20 @@ enum PlayerSettings {
 
     /// Keep the sound going (picture off) when the screen locks or the app goes to the background.
     static var backgroundAudio: Bool { UserDefaults.standard.bool(forKey: backgroundAudioKey) }
+
+    static var networkCachingMs: Int {
+        let value = UserDefaults.standard.integer(forKey: cachingKey)
+        return cachingChoices.contains { $0.ms == value } ? value : defaultCachingMs
+    }
+
+    /// One step up (a video stalled twice); nil when already at the top.
+    static func raiseCaching() -> Int? {
+        guard let index = cachingChoices.firstIndex(where: { $0.ms == networkCachingMs }),
+              index + 1 < cachingChoices.count else { return nil }
+        let next = cachingChoices[index + 1].ms
+        UserDefaults.standard.set(next, forKey: cachingKey)
+        return next
+    }
 }
 
 struct PlayerSettingsView: View {
@@ -27,6 +53,7 @@ struct PlayerSettingsView: View {
     @AppStorage(PlayerSettings.doubleTapKey) private var doubleTap = 30
     @AppStorage(PlayerSettings.remainingKey) private var showRemaining = false
     @AppStorage(PlayerSettings.backgroundAudioKey) private var backgroundAudio = false
+    @AppStorage(PlayerSettings.cachingKey) private var caching = PlayerSettings.defaultCachingMs
 
     var body: some View {
         List {
@@ -48,6 +75,15 @@ struct PlayerSettingsView: View {
                 }
             } footer: {
                 Text("Chạm 2 lần vào bên trái / phải màn hình để tua lùi / tới. Chạm vào thời lượng ở cuối thanh tua cũng đổi qua lại giữa tổng thời lượng và thời gian còn lại.")
+            }
+            Section {
+                Picker(selection: $caching) {
+                    ForEach(PlayerSettings.cachingChoices, id: \.ms) { Text($0.label).tag($0.ms) }
+                } label: {
+                    IconLabel("Bộ đệm mạng", systemName: "speedometer", color: .green)
+                }
+            } footer: {
+                Text("Lượng video đọc trước khi hiện hình (lúc mở và sau mỗi lần tua). Thấp hơn: mở và tua nhanh hơn; cao hơn: chịu được Wi-Fi chập chờn. Video nào bị đứng hình chờ tải 2 lần thì app tự nâng lên một mức cho các lần mở sau. Áp dụng từ video mở tiếp theo.")
             }
             Section {
                 Toggle(isOn: $backgroundAudio) {
