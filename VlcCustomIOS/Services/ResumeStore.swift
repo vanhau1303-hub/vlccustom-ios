@@ -156,6 +156,20 @@ final class WatchHistory: ObservableObject {
         }
     }
 
+    /// Đang xem dở → Xoá hết: every position forgotten; "watched" marks stay.
+    func clearAllPositions() {
+        var next = entries
+        for (source, entry) in entries where entry.ms > 0 {
+            if entry.watched == true {
+                next[source]?.ms = 0
+            } else {
+                next[source] = nil
+            }
+        }
+        entries = next
+        persist()
+    }
+
     private func set(_ source: String, _ entry: Entry) {
         entries[source] = entry
         if entries.count > Self.limit {

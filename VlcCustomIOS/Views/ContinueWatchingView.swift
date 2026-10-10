@@ -6,6 +6,7 @@ struct ContinueWatchingView: View {
     @ObservedObject private var history = WatchHistory.shared
     @ObservedObject private var librarySettings = LibrarySettings.shared
     @State private var playing = false
+    @State private var confirmClear = false
 
     private static let relative: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -32,6 +33,21 @@ struct ContinueWatchingView: View {
         .listStyle(.plain)
         .navigationTitle("Đang xem dở")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !items.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Xoá hết", role: .destructive) { confirmClear = true }
+                }
+            }
+        }
+        .confirmationDialog("Xoá toàn bộ danh sách đang xem dở?", isPresented: $confirmClear, titleVisibility: .visible) {
+            Button("Xoá hết \(items.count) video", role: .destructive) {
+                withAnimation { history.clearAllPositions() }
+            }
+            Button("Huỷ", role: .cancel) {}
+        } message: {
+            Text("Mở lại các video này sẽ phát từ đầu. Dấu \"Đã xem\" của video đã xem hết vẫn giữ nguyên.")
+        }
         .fullScreenCover(isPresented: $playing) {
             PlayerScreen(onClose: { withoutSlide { playing = false } })
         }
