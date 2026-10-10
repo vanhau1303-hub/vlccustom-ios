@@ -159,16 +159,20 @@ struct PlayerScreen: View {
                         HStack(spacing: 10) {
                             PlayerTimeRow(clock: player.clock, live: live, scrub: scrub,
                                     onScrub: { [scrub] fraction in
-                                        scrub.seeking = true
-                                        scrub.value = fraction
+                                        scrub.follow(fraction)
+                                        // The picture follows the thumb too.
+                                        if player.duration > 0 { player.scrub(toMs: Int32(fraction * Double(player.duration))) }
                                         keepControlsVisible()
                                     },
                                     onCommit: { [scrub] fraction in
-                                        scrub.value = fraction
-                                        player.seek(to: fraction)
+                                        if player.duration > 0 {
+                                            player.endScrub(atMs: Int32(fraction * Double(player.duration)))
+                                        } else {
+                                            player.seek(to: fraction)
+                                        }
                                         keepControlsVisible()
                                         // Hold the new position until VLC reports it, instead of snapping back.
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { scrub.seeking = false }
+                                        scrub.release(at: fraction)
                                     })
                         }
                         HStack(spacing: 36) {
@@ -418,6 +422,8 @@ struct PlayerScreen: View {
                         scratch.dragMode = .edgeBack
                     } else if dx > dy {
                         scratch.dragMode = .seek
+                        scratch.seekBaseMs = Int(player.time)
+                        scratch.seekOriginDX = value.translation.width
                         scratch.seekPreviewMs = Int(player.time)
                     } else if value.startLocation.x < size.width / 2 {
                         scratch.dragMode = .brightness
@@ -430,10 +436,15 @@ struct PlayerScreen: View {
                 switch scratch.dragMode {
                 case .seek:
                     guard player.duration > 0 else { return }
-                    let deltaMs = Int(Double(value.translation.width / size.width) * 120_000)
-                    let newMs = max(0, min(Int(player.duration), Int(player.time) + deltaMs))
+                    let deltaMs = Int(Double((value.translation.width - scratch.seekOriginDX) / size.width) * 120_000)
+                    let newMs = max(0, min(Int(player.duration) - 1000, scratch.seekBaseMs + deltaMs))
                     scratch.seekPreviewMs = newMs
-                    hint.set((deltaMs >= 0 ? "+" : "") + "\(deltaMs / 1000)s  →  " + PlayerTimeRow.format(Int32(newMs)))
+                    let fraction = Double(newMs) / Double(player.duration)
+                    hint.set(PlayerTimeRow.format(Int32(newMs)) + "  (" + (deltaMs >= 0 ? "+" : "−") + "\(abs(deltaMs) / 1000)s)",
+                             progress: fraction)
+                    // The picture, the seek bar and the time follow the finger.
+                    scrub.follow(fraction)
+                    player.scrub(toMs: Int32(newMs))
                 case .brightness:
                     let delta = Double(-value.translation.height / size.height)
                     let newValue = min(1, max(0, scratch.dragBaseValue + delta))
@@ -453,7 +464,8 @@ struct PlayerScreen: View {
             }
             .onEnded { value in
                 if scratch.dragMode == .seek, let target = scratch.seekPreviewMs, player.duration > 0 {
-                    player.seek(to: Double(target) / Double(player.duration))
+                    player.endScrub(atMs: Int32(target))
+                    scrub.release(at: Double(target) / Double(player.duration))
                 }
                 if scratch.dragMode == .edgeBack, value.translation.width > 90 || value.predictedEndTranslation.width > 200 {
                     close()
@@ -832,10 +844,77 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         VLCControl.run { player.position = Float(fraction) }
     }
 
+    // MARK: - Live seeking (a finger on the video or on the seek bar)
+
+    /// The newest spot the finger asked for, not sent to libVLC yet.
+    private var scrubTarget: Int32?
+    /// The seek libVLC is doing now: done when it reports a time near it (or after 0.6 s).
+    private var scrubInFlight: (target: Int32, at: Date)?
+    private var scrubRetry: DispatchWorkItem?
+    private var lastScrubSent: Int32?
+
+    /// The finger moved: the picture follows it — one seek at a time and only to the newest spot. (Seeking only on
+    /// release left the picture standing still during the whole drag; a seek per movement would pile up in libVLC.)
+    func scrub(toMs target: Int32) {
+        scrubTarget = target
+        sendScrubIfReady()
+    }
+
+    private func sendScrubIfReady() {
+        guard let target = scrubTarget else { return }
+        if let flight = scrubInFlight {
+            let elapsed = Date().timeIntervalSince(flight.at)
+            if elapsed < 0.6 {
+                // Sent when libVLC reports the previous one done, or when that takes too long.
+                if scrubRetry == nil {
+                    let work = DispatchWorkItem { [weak self] in
+                        self?.scrubRetry = nil
+                        self?.scrubInFlight = nil
+                        self?.sendScrubIfReady()
+                    }
+                    scrubRetry = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + (0.6 - elapsed), execute: work)
+                }
+                return
+            }
+        }
+        scrubTarget = nil
+        // Barely moved since the last one: not worth a seek (the exact spot is sent on release).
+        if let last = lastScrubSent, abs(Int(last) - Int(target)) < 300 { return }
+        scrubInFlight = (target, Date())
+        lastScrubSent = target
+        let player = mediaPlayer
+        VLCControl.run { player.time = VLCTime(int: target) }
+    }
+
+    /// The finger lifted: the exact spot, shown by the clock at once (no snapping back while libVLC catches up).
+    func endScrub(atMs target: Int32) {
+        scrubRetry?.cancel()
+        scrubRetry = nil
+        scrubTarget = nil
+        scrubInFlight = nil
+        if lastScrubSent != target {
+            let player = mediaPlayer
+            VLCControl.run { player.time = VLCTime(int: target) }
+        }
+        lastScrubSent = nil
+        showSeekTarget(target)
+        if let currentSource { PlaybackDiagnostics.append("player: seek to \(target)ms (\(currentSource.split(separator: "/").last ?? ""))") }
+    }
+
     func skip(ms: Int32) {
         let newTime = max(0, mediaPlayer.time.intValue + ms)
         let player = mediaPlayer
         VLCControl.run { player.time = VLCTime(int: newTime) }
+        showSeekTarget(newTime)
+    }
+
+    /// A seek just asked for: the clock shows `target` right away and ignores libVLC's old position for up to 2.5 s.
+    private var pendingSeek: (target: Int32, until: Date)?
+
+    private func showSeekTarget(_ target: Int32) {
+        pendingSeek = (target, Date().addingTimeInterval(2.5))
+        time = target
     }
 
     func stop() {
@@ -1044,6 +1123,22 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         DispatchQueue.main.async {
             let previous = self.time
             let now = self.mediaPlayer.time.intValue
+            // A live seek got there: the next one can go.
+            if let flight = self.scrubInFlight, Date().timeIntervalSince(flight.at) > 0.08,
+               abs(Int(now) - Int(flight.target)) < 2500 {
+                self.scrubInFlight = nil
+                self.scrubRetry?.cancel()
+                self.scrubRetry = nil
+                self.sendScrubIfReady()
+            }
+            // Right after a seek libVLC still reports the old spot for a moment: keep showing the new one.
+            if let pending = self.pendingSeek {
+                if abs(Int(now) - Int(pending.target)) < 2500 || Date() > pending.until {
+                    self.pendingSeek = nil
+                } else {
+                    return
+                }
+            }
             // Republish at most ~4x/s: each change re-renders the whole player view.
             if now > 0, self.isLoading { self.isLoading = false }
             guard abs(now - previous) >= 250 || now < previous else { return }
@@ -1359,6 +1454,24 @@ private struct SubtitleMarksBar: View {
 final class ScrubState: ObservableObject {
     @Published var seeking = false
     @Published var value: Double = 0
+    /// Bumped by every drag movement, so a "let go" hold from an earlier drag does not end a newer one.
+    var generation = 0
+
+    /// The finger lifted: keep showing `value` a moment, until libVLC reports the new position.
+    func release(at fraction: Double) {
+        value = fraction
+        generation += 1
+        let mine = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            if self?.generation == mine { self?.seeking = false }
+        }
+    }
+
+    func follow(_ fraction: Double) {
+        generation += 1
+        if !seeking { seeking = true }
+        value = fraction
+    }
 }
 
 /// What the player's gestures keep between movements but never draw — a plain object held in @State, so writing
@@ -1367,6 +1480,10 @@ private final class GestureScratch {
     var dragMode: PlayerDragMode?
     var dragBaseValue: Double = 0
     var seekPreviewMs: Int?
+    /// Where the video was when the seek drag began, and how far the finger had already moved then — the target is
+    /// counted from these (the video's own time moves while seeking live, so it cannot be the base).
+    var seekBaseMs = 0
+    var seekOriginDX: CGFloat = 0
     /// Rate to go back to when the press-and-hold 2× boost ends.
     var speedBoostFrom: Float?
     var hideAt = Date.distantPast
@@ -1378,7 +1495,12 @@ private final class GestureScratch {
 /// The gesture bubble's text; only `GestureHintView` observes it.
 final class GestureHint: ObservableObject {
     @Published private(set) var text: String?
-    func set(_ new: String?) { if text != new { text = new } }
+    /// While seeking: where in the video (0…1), drawn as a bar under the text.
+    @Published private(set) var progress: Double?
+    func set(_ new: String?, progress newProgress: Double? = nil) {
+        if text != new { text = new }
+        if progress != newProgress { progress = newProgress }
+    }
 }
 
 private struct GestureHintView: View {
@@ -1386,12 +1508,21 @@ private struct GestureHintView: View {
 
     var body: some View {
         if let text = hint.text {
-            Text(text)
-                .font(.headline.monospacedDigit()).foregroundStyle(.white)
-                .padding(.horizontal, 16).padding(.vertical, 8)
-                .background(Color.black.opacity(0.7))
-                .clipShape(Capsule())
-                .allowsHitTesting(false)
+            VStack(spacing: 8) {
+                Text(text)
+                    .font(.headline.monospacedDigit()).foregroundStyle(.white)
+                if let progress = hint.progress {
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.3))
+                        Capsule().fill(.tint).frame(width: 200 * CGFloat(min(max(progress, 0), 1)))
+                    }
+                    .frame(width: 200, height: 4)
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .background(Color.black.opacity(0.7))
+            .clipShape(RoundedRectangle(cornerRadius: hint.progress == nil ? 20 : 14, style: .continuous))
+            .allowsHitTesting(false)
         }
     }
 }
