@@ -124,7 +124,8 @@ struct OpenSubtitlesSection: View {
                     let target = translate && result.language != "vi" ? "vi" : nil
                     LiveSubtitles.shared.startFromExisting(source: source, optionID: OpenSubtitles.optionPrefix + result.fileId,
                                                            lines: lines, translateTo: target,
-                                                           dual: target != nil && SpeechSettings.shared.dualSubtitles)
+                                                           dual: target != nil && SpeechSettings.shared.dualSubtitles,
+                                                           sourceLanguage: result.language)
                 } else {
                     // A format the app does not read: VLC shows it as a subtitle track.
                     LiveSubtitles.shared.reset()

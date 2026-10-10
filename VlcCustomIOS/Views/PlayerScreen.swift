@@ -107,6 +107,11 @@ struct PlayerScreen: View {
 
             LiveStatusBadge(live: live)
 
+            // Apple's translation runs inside a view: this one, while the player is open.
+            if #available(iOS 18.0, *) {
+                AppleTranslationHost()
+            }
+
             if let offer = player.resumeOffer {
                 ResumeBanner(timeText: format(offer)) {
                     player.acceptResume()

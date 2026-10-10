@@ -26,7 +26,7 @@ enum MediaInspector {
         switch media.parsedStatus.rawValue {
         case 4: break // done
         case 3: lines.append("⚠️ Quá thời gian đọc thông tin (mạng chậm hoặc file cần đọc nhiều chỗ).")
-        case 2: lines.append("❌ VLC không đọc được file này (hỏng, chưa tải xong, hoặc không phải định dạng video).")
+        case 2: lines.append("❌ Trình phát không đọc được file này (hỏng, chưa tải xong, hoặc không phải định dạng video).")
         default: lines.append("⚠️ Chưa đọc xong thông tin file.")
         }
 

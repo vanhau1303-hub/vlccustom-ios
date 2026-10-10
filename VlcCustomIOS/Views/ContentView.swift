@@ -38,7 +38,9 @@ struct ContentView: View {
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
                 ThumbnailBackfill.shared.startAll()
             }
+            #if DEBUG
             await startDemoSmbPlayback()
+            #endif
         }
     }
 
@@ -187,11 +189,13 @@ struct SettingsView: View {
                     NavigationLink { DiagnosticsSettingsView() } label: {
                         IconLabel("Chẩn đoán", systemName: "stethoscope", color: .green)
                     }
-                    HStack {
-                        IconLabel("Phiên bản", systemName: "info", color: .gray)
-                        Spacer()
-                        Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")
-                            .foregroundStyle(.secondary)
+                    NavigationLink { AboutView() } label: {
+                        HStack {
+                            IconLabel("Giới thiệu & giấy phép", systemName: "info", color: .gray)
+                            Spacer()
+                            Text(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }

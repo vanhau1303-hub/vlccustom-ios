@@ -116,7 +116,7 @@ struct SpeechSubtitleSections: View {
             if settings.translateTo != nil {
                 Section {
                     Picker("Dịch bằng", selection: $settings.useClaude) {
-                        Text("Google (miễn phí)").tag(false)
+                        Text("Apple (miễn phí, dịch trên máy)").tag(false)
                         Text("Claude AI (API key riêng)").tag(true)
                     }
                     if settings.useClaude {
@@ -152,7 +152,12 @@ struct SpeechSubtitleSections: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     } else {
-                        TextField("Máy chủ LibreTranslate (trống = Google)", text: $settings.libreTranslateServer)
+                        if !AppleTranslator.isAvailable {
+                            Text("Máy đang chạy iOS dưới 18 nên không có bộ dịch của Apple: chọn Claude, hoặc nhập máy chủ LibreTranslate riêng.")
+                                .font(.footnote).foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        TextField("Máy chủ LibreTranslate (trống = Apple)", text: $settings.libreTranslateServer)
                             .textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
                             .keyboardType(.URL)
                     }

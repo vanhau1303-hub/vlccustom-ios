@@ -108,7 +108,7 @@ struct DiagnosticsSettingsView: View {
     var body: some View {
         List {
             Section {
-                ShareLink(item: DiagnosticsLogFile(), preview: SharePreview("vlc_diagnostics.log")) {
+                ShareLink(item: DiagnosticsLogFile(), preview: SharePreview("lanplayer_diagnostics.log")) {
                     IconLabel("Chia sẻ log chẩn đoán", systemName: "square.and.arrow.up", color: .green)
                 }
                 Button("Xoá log", role: .destructive) { PlaybackDiagnostics.clear() }
@@ -121,10 +121,77 @@ struct DiagnosticsSettingsView: View {
                 }
                 .onChange(of: verbose) { PlaybackDiagnostics.setVerbose($0) }
             } footer: {
-                Text("Ghi cả thông tin chi tiết của VLC (không chỉ lỗi và cảnh báo). Bật khi cần gửi log để tìm lỗi, xong thì tắt cho đỡ tốn pin.")
+                Text("Ghi cả thông tin chi tiết của trình phát (không chỉ lỗi và cảnh báo). Bật khi cần gửi log để tìm lỗi, xong thì tắt cho đỡ tốn pin.")
             }
         }
         .navigationTitle("Chẩn đoán")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// Cài đặt → Giới thiệu & giấy phép: version, privacy policy, and the open-source libraries LAN Player is built on
+/// (their licenses ask for this notice; the LGPL ones also for a way to relink them — the app's source is public).
+struct AboutView: View {
+    private struct Library: Identifiable {
+        let name: String
+        let license: String
+        let url: String
+        var id: String { name }
+    }
+
+    private static let libraries: [Library] = [
+        Library(name: "VLCKit / libVLC (VideoLAN)", license: "LGPL 2.1", url: "https://code.videolan.org/videolan/VLCKit"),
+        Library(name: "AMSMB2", license: "LGPL 2.1", url: "https://github.com/amosavian/AMSMB2"),
+        Library(name: "libsmb2", license: "LGPL 2.1", url: "https://github.com/sahlberg/libsmb2"),
+        Library(name: "WhisperKit (Argmax)", license: "MIT", url: "https://github.com/argmaxinc/WhisperKit"),
+        Library(name: "Whisper models (OpenAI)", license: "MIT", url: "https://github.com/openai/whisper"),
+    ]
+
+    static let privacyPolicyURL = URL(string: "https://vanhau1303-hub.github.io/vlccustom-ios/privacy.html")!
+    static let sourceURL = URL(string: "https://github.com/vanhau1303-hub/vlccustom-ios")!
+
+    private var version: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(short) (\(build))"
+    }
+
+    var body: some View {
+        List {
+            Section {
+                HStack {
+                    IconLabel("LAN Player", systemName: "play.rectangle.fill", color: AppTheme.shared.accent)
+                    Spacer()
+                    Text(version).foregroundStyle(.secondary)
+                }
+                Link(destination: Self.privacyPolicyURL) {
+                    IconLabel("Chính sách quyền riêng tư", systemName: "hand.raised.fill", color: .blue)
+                }
+            }
+            Section {
+                ForEach(Self.libraries) { library in
+                    if let url = URL(string: library.url) {
+                        Link(destination: url) {
+                            HStack {
+                                Text(library.name).foregroundStyle(.primary)
+                                Spacer()
+                                Text(library.license).font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                if let lgpl = URL(string: "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html") {
+                    Link("Toàn văn giấy phép LGPL 2.1", destination: lgpl)
+                }
+                Link("Mã nguồn của LAN Player", destination: Self.sourceURL)
+            } header: {
+                Text("Giấy phép mã nguồn mở")
+            } footer: {
+                Text("LAN Player dùng các thư viện mã nguồn mở trên theo đúng giấy phép của chúng. Với các thư viện LGPL, mã nguồn của LAN Player được công khai để có thể dựng lại app với phiên bản thư viện khác. VLC là thương hiệu của VideoLAN; LAN Player không liên quan tới VideoLAN.")
+            }
+        }
+        .navigationTitle("Giới thiệu")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

@@ -20,14 +20,20 @@ targets:
     info:
       path: VlcCustomIOS/Info.plist
       properties:
-        CFBundleShortVersionString: "0.69"
+        CFBundleShortVersionString: "1.0"
+        # App Store name (the target / executable keep their old internal name; nothing user-facing says VLC —
+        # VideoLAN's trademark).
+        CFBundleDisplayName: "LAN Player"
+        CFBundleName: "LAN Player"
+        # Only standard HTTPS / SMB encryption: no export compliance paperwork per upload.
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         # Without this key iPhone ProMotion screens cap third-party apps at 60Hz: scrolling, swipes and animations
         # now run at up to 120Hz.
         CADisableMinimumFrameDurationOnPhone: true
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
-        NSLocalNetworkUsageDescription: "Cần quyền mạng cục bộ để duyệt và phát video từ máy tính chia sẻ qua SMB trong cùng mạng Wi-Fi."
+        NSLocalNetworkUsageDescription: "LAN Player cần quyền mạng cục bộ để duyệt và phát video từ máy tính chia sẻ qua SMB trong cùng mạng Wi-Fi."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         UIBackgroundModes:
@@ -38,8 +44,8 @@ targets:
           - UIInterfaceOrientationLandscapeRight
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.vlccustom.ios
-        MARKETING_VERSION: "0.69"
+        PRODUCT_BUNDLE_IDENTIFIER: com.vanhau1303.lanplayer
+        MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Manual
@@ -50,7 +56,10 @@ targets:
         SWIFT_VERSION: "5.0"
         # Declarations of the few libVLC C functions VLCSnapshotter calls directly.
         SWIFT_OBJC_BRIDGING_HEADER: VlcCustomIOS/LibVLCBridge.h
-        TARGETED_DEVICE_FAMILY: "1,2"
+        # iPhone only for the first App Store version (iPad would need every orientation and its own screenshots).
+        TARGETED_DEVICE_FAMILY: "1"
+        # Apple's translation framework exists from iOS 17.4 / 18; the app runs from iOS 16.
+        OTHER_LDFLAGS: ["$(inherited)", "-weak_framework", "Translation"]
     dependencies:
       # Explicit `embed: true` — without it, `xcodebuild archive` (used for the real .ipa) does not copy the AMSMB2
       # framework into the app bundle even though it links against it, so the app compiles and even runs fine from a

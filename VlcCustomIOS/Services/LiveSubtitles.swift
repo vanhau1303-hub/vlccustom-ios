@@ -220,7 +220,8 @@ final class LiveSubtitles: ObservableObject {
     /// speech: every line is shown in its original language at once and translated in place by the same batched,
     /// playhead-first queue the AI subtitles use (resumes after quota pauses, persisted). With no target language
     /// the lines are simply shown.
-    func startFromExisting(source: String, optionID: String, lines: [TimedLine], translateTo: String?, dual: Bool) {
+    func startFromExisting(source: String, optionID: String, lines: [TimedLine], translateTo: String?, dual: Bool,
+                           sourceLanguage: String? = nil) {
         stop()
         errorMessage = nil
         self.source = source
@@ -235,7 +236,7 @@ final class LiveSubtitles: ObservableObject {
         let pendingURL = dir.appendingPathComponent("sub_\(key).pending.json")
         self.pendingURL = pendingURL
         self.translateTo = (translateTo?.isEmpty ?? true) ? nil : translateTo
-        self.sourceLanguage = nil
+        self.sourceLanguage = sourceLanguage
         self.dual = dual
         coverage = Coverage()
         pausedUntil = nil
@@ -432,6 +433,7 @@ final class LiveSubtitles: ObservableObject {
                     let total = votes.values.reduce(0, +)
                     if total >= 300, let top = votes.max(by: { $0.value < $1.value }), Double(top.value) / Double(total) >= 0.6 {
                         spoken = top.key
+                        sourceLanguage = top.key
                         PlaybackDiagnostics.append("asr: language \(top.key) (\(Int(Double(top.value) / Double(total) * 100))% of \(total) chars)")
                         // Earlier windows that came out in another language: drop them and recognize them again.
                         for window in windowLanguages where window.language != top.key {
@@ -588,10 +590,11 @@ final class LiveSubtitles: ObservableObject {
     /// nearest to the playhead first, unless the service asked us to wait.
     private func translatePendingNow() async {
         guard let translateTo, !pending.isEmpty else { return }
-        // Claude takes bigger batches (it returns one line per line, and sees more context); Google: 12 / 900.
+        // Claude takes bigger batches (it returns one line per line, and sees more context); Apple translates each
+        // line of a batch on its own, on the device.
         let claude = SpeechSettings.shared.useClaude
-        let batchSize = claude ? 40 : 12
-        let maxChars = claude ? 4000 : 900
+        let batchSize = claude ? 40 : 30
+        let maxChars = claude ? 4000 : 3000
         if let pausedUntil, pausedUntil > Date() { updateTranslationNote(); return }
         let playhead = playheadProvider?() ?? 0
         // Ahead of the playhead first (closest first), then whatever lies behind it.
@@ -636,7 +639,7 @@ final class LiveSubtitles: ObservableObject {
     }
 
     /// One request for the whole batch (see `SubtitleTranslator.translateLines`). The source language is the one
-    /// picked in the dialog, otherwise Google detects it ("auto") — never Whisper's guess, which can be wrong.
+    /// picked in the dialog, the one the recognition settled on, or the downloaded subtitle's; otherwise detected.
     private func translateBatch(_ lines: [String], to target: String, firstStart: Int) async throws -> [String] {
         let settings = SpeechSettings.shared
         if settings.useClaude {

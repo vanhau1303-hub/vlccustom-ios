@@ -30,6 +30,12 @@ struct SmbBrowserView: View {
     @State private var playlists: [Playlist] = []
     @ObservedObject private var librarySettings = LibrarySettings.shared
     @State private var showScan = false
+    /// "Xem thử video mẫu": plays without any server (for a first look, and for App Review).
+    @State private var playingSample = false
+    private static let sampleVideo = VideoItem(
+        name: "Video mẫu (Apple HLS)",
+        source: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8",
+        sizeBytes: 0, lastModified: .distantPast)
     @ObservedObject private var navigator = AppNavigator.shared
     /// Reopening a folder (app start, Yêu thích): its last listing is shown while the connection comes up, instead
     /// of the login form flashing up for a moment.
@@ -48,6 +54,7 @@ struct SmbBrowserView: View {
                         connectForm
                         if !savedProfiles.isEmpty { savedServersRow }
                         if let status { Text(status).foregroundStyle(.red).font(.footnote) }
+                        sampleRow
                     }
                     .padding(.horizontal)
                 } else {
@@ -97,6 +104,9 @@ struct SmbBrowserView: View {
             }
             .fullScreenCover(item: $playing) { _ in
                 PlayerScreen(onClose: { withoutSlide { playing = nil } })
+            }
+            .fullScreenCover(isPresented: $playingSample) {
+                PlayerScreen(onClose: { withoutSlide { playingSample = false } })
             }
             .fullScreenCover(item: $viewer) { target in
                 ImageViewerScreen(items: target.items, startIndex: target.index, dataProvider: SmbImageLoader.viewerData, onClose: { withoutSlide { viewer = nil } })
@@ -243,6 +253,28 @@ struct SmbBrowserView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 11)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(.tertiarySystemGroupedBackground)))
+    }
+
+    /// No server at hand: a sample video over the internet, to see the player (and for App Review).
+    private var sampleRow: some View {
+        Button {
+            PlaybackQueue.shared.start([Self.sampleVideo], index: 0, label: "Video mẫu")
+            withoutSlide { playingSample = true }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "play.tv.fill").font(.title3).foregroundStyle(.tint).frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Xem thử video mẫu").font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                    Text("Không cần máy chủ — phát một video mẫu qua Internet").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 4)
     }
 
     private var savedServersRow: some View {

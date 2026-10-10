@@ -226,7 +226,7 @@ struct SubtitleStyleSection: View {
         } header: {
             Text("Kiểu chữ phụ đề")
         } footer: {
-            Text("Áp dụng cho phụ đề AI, phụ đề tải từ OpenSubtitles (hiện như phụ đề AI) và phụ đề có sẵn trong file. Phụ đề có sẵn do VLC vẽ: theo cỡ chữ, màu, font và chữ đậm (không có nền, luôn có viền); phụ đề kiểu ASS (thường gặp ở anime) có định dạng riêng trong file nên có thể không đổi.")
+            Text("Áp dụng cho phụ đề AI, phụ đề tải từ OpenSubtitles (hiện như phụ đề AI) và phụ đề có sẵn trong file. Phụ đề có sẵn do trình phát vẽ: theo cỡ chữ, màu, font và chữ đậm (không có nền, luôn có viền); phụ đề kiểu ASS (thường gặp ở anime) có định dạng riêng trong file nên có thể không đổi.")
         }
     }
 }

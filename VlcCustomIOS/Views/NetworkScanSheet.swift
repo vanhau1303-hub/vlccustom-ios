@@ -24,7 +24,7 @@ struct NetworkScanSheet: View {
                 } else if found.isEmpty {
                     ContentUnavailableFallback(
                         title: "Không tìm thấy máy nào",
-                        message: "Kiểm tra điện thoại và máy tính đang cùng mạng Wi-Fi, máy tính đã bật chia sẻ file, và đã cho phép VLCcustom truy cập mạng cục bộ (Cài đặt > Quyền riêng tư & Bảo mật > Mạng cục bộ)."
+                        message: "Kiểm tra điện thoại và máy tính đang cùng mạng Wi-Fi, máy tính đã bật chia sẻ file, và đã cho phép LAN Player truy cập mạng cục bộ (Cài đặt > Quyền riêng tư & Bảo mật > Mạng cục bộ)."
                     )
                 } else {
                     List(found) { item in

@@ -20,7 +20,7 @@ final class SpeechSettings: ObservableObject {
     @Published var libreTranslateServer: String {
         didSet { UserDefaults.standard.set(libreTranslateServer, forKey: Keys.libreServer) }
     }
-    /// Who translates: Google's free endpoint, or Claude (the user's own API key) in a chosen style.
+    /// Who translates: Apple's on-device translation (iOS 18+), or Claude (the user's own API key) in a chosen style.
     @Published var useClaude: Bool {
         didSet { UserDefaults.standard.set(useClaude, forKey: Keys.useClaude) }
     }
@@ -33,7 +33,7 @@ final class SpeechSettings: ObservableObject {
 
     /// Part of the subtitle cache key: a change of translator or style makes new subtitles instead of reusing others.
     var translatorSignature: String {
-        useClaude ? "claude:\(claudeModel.rawValue):\(translationStyle.rawValue)" : "google"
+        useClaude ? "claude:\(claudeModel.rawValue):\(translationStyle.rawValue)" : "apple"
     }
 
     /// The model that suits this iPhone: Turbo with 8 GB of RAM, Small with 6 GB, Base below. Used until the user

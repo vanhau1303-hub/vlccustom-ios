@@ -77,7 +77,7 @@ enum PlaybackDiagnostics {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let copy = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vlc_diagnostics_\(formatter.string(from: Date())).log")
+            .appendingPathComponent("lanplayer_diagnostics_\(formatter.string(from: Date())).log")
         try? FileManager.default.removeItem(at: copy)
         var data = (try? Data(contentsOf: oldURL)) ?? Data()
         data.append((try? Data(contentsOf: logURL)) ?? Data())

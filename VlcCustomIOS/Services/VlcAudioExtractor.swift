@@ -50,7 +50,7 @@ enum VlcAudioExtractor {
             case .opening, .buffering, .playing, .esAdded: started = true
             case .ended: started = true
             case .error:
-                throw ExtractionError(message: "VLC không đọc được âm thanh của file này.")
+                throw ExtractionError(message: "Không đọc được âm thanh của file này.")
             default: break
             }
             if player.state == .ended || (started && player.state == .stopped) { break }
