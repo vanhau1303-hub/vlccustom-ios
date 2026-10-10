@@ -13,8 +13,7 @@ enum SubtitleTranslator {
 
     /// Several subtitle lines at once, same count back. `from` "auto" (or empty): detected.
     static func translateLines(_ lines: [String], from: String, to: String, serverURL: String) async throws -> [String] {
-        let clean = lines.map { $0.replacingOccurrences(of: "
-", with: " ").trimmingCharacters(in: .whitespaces) }
+        let clean = lines.map { $0.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces) }
         guard !clean.isEmpty else { return [] }
         let server = serverURL.trimmingCharacters(in: .whitespaces)
         if !server.isEmpty, !server.contains("libretranslate.com") {

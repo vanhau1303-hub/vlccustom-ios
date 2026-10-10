@@ -230,9 +230,11 @@ struct PlayerScreen: View {
         }
         .statusBarHidden()
         .tint(AppTheme.shared.accent)
+        .proPaywall(.player)
         .fadeInOnAppear()
         .onAppear {
             MusicUI.shared.videoOpened()
+            scratch.openedAt = Date()
             player.playCurrent(); PlaybackActivity.shared.isBusy = true; keepControlsVisible()
             // AI subtitles follow the playhead (seeks included).
             live.playheadProvider = { [weak player] in Int(player?.time ?? 0) }
@@ -242,6 +244,7 @@ struct PlayerScreen: View {
             LiveSubtitles.nextEpisode.reset()
             Task { await WhisperEngine.shared.unloadAll() }
             OrientationLock.unlock()
+            AdsManager.shared.playerClosed(watched: Date().timeIntervalSince(scratch.openedAt))
         }
         .onChange(of: player.didReachEnd) { reached in if reached { playNextOrClose() } }
         // Another file in the same player (next in the folder, picked from the list): drop the previous one's
@@ -1552,6 +1555,8 @@ private final class GestureScratch {
     var hideTimerRunning = false
     /// When the lock badge was last shown (it hides 2.5 s later unless shown again meanwhile).
     var unlockShownAt: Date?
+    /// When the player opened (the free version may show an ad after a long enough watch).
+    var openedAt = Date()
 }
 
 /// The gesture bubble's text; only `GestureHintView` observes it.

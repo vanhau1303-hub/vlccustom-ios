@@ -21,7 +21,7 @@ struct VideoThumbnailView: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
-            if animated, frames.count > 1 {
+            if animated, ProStore.unlocked, frames.count > 1 {
                 Image(uiImage: frames[frameIndex % frames.count]).resizable().scaledToFill()
                     .id(frameIndex)
                     .transition(.opacity)
@@ -66,7 +66,7 @@ struct VideoThumbnailView: View {
         .task(id: "\(source)#\(events.version)#\(made)#\(animated)#\(image != nil)") {
             frames = []
             frameIndex = 0
-            guard animated, image != nil, let (host, path) = SmbUri.parse(source) else { return }
+            guard animated, ProStore.unlocked, image != nil, let (host, path) = SmbUri.parse(source) else { return }
             var loaded = await ThumbnailService.shared.cachedPreview(source: source)
             if loaded.isEmpty, !activity.isBusy {
                 loaded = await ThumbnailService.shared.smbPreview(source: source, host: host, path: path)

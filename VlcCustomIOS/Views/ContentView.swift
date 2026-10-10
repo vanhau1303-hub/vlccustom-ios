@@ -26,7 +26,10 @@ struct ContentView: View {
         // Scrolling a list closes the keyboard too.
         .scrollDismissesKeyboard(.immediately)
         .onAppear { DispatchQueue.main.async { KeyboardDismisser.shared.install() } }
+        // Free version: consent, then ads (nothing with Pro).
+        .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { AdsManager.shared.start() } }
         .musicPlayerHost()
+        .proPaywall(.main)
         .background(
             EmptyView().fullScreenCover(isPresented: $demoPlaying) {
                 PlayerScreen(onClose: { demoPlaying = false })
@@ -135,10 +138,25 @@ struct SettingsView: View {
     @State private var library: LibraryScreen?
     @ObservedObject private var backfill = ThumbnailBackfill.shared
     @ObservedObject private var history = WatchHistory.shared
+    @ObservedObject private var pro = ProStore.shared
 
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Button { pro.paywall = ProStore.PaywallRequest(feature: "", context: .main) } label: {
+                        HStack {
+                            IconLabel(pro.isPro ? "LAN Player Pro — đã mở khoá" : "Nâng cấp LAN Player Pro",
+                                      systemName: "crown.fill", color: .orange)
+                            Spacer()
+                            if !pro.isPro {
+                                Text("Bỏ quảng cáo").font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
                 Section {
                     NavigationLink {
                         ContinueWatchingView()

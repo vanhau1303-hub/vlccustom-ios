@@ -31,7 +31,7 @@ enum PlayerSettings {
     }
 
     /// Keep the sound going (picture off) when the screen locks or the app goes to the background.
-    static var backgroundAudio: Bool { UserDefaults.standard.bool(forKey: backgroundAudioKey) }
+    static var backgroundAudio: Bool { UserDefaults.standard.bool(forKey: backgroundAudioKey) && ProStore.unlocked }
 
     static var networkCachingMs: Int {
         let value = UserDefaults.standard.integer(forKey: cachingKey)
@@ -86,7 +86,7 @@ struct PlayerSettingsView: View {
                 Text("Lượng video đọc trước khi hiện hình (lúc mở và sau mỗi lần tua). Thấp hơn: mở và tua nhanh hơn; cao hơn: chịu được Wi-Fi chập chờn. Video nào bị đứng hình chờ tải 2 lần thì app tự nâng lên một mức cho các lần mở sau. Áp dụng từ video mở tiếp theo.")
             }
             Section {
-                Toggle(isOn: $backgroundAudio) {
+                ProToggle(feature: "Nghe tiếp khi khoá màn hình", isOn: $backgroundAudio) {
                     IconLabel("Nghe tiếp khi khoá màn hình", systemName: "lock.iphone", color: .indigo)
                 }
             } footer: {

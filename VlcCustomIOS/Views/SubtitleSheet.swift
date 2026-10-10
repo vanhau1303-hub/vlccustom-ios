@@ -49,6 +49,7 @@ struct SubtitleSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .proPaywall(.subtitleSheet)
     }
 
     @ViewBuilder

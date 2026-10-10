@@ -6,6 +6,7 @@ struct OpenSubtitlesSection: View {
     @ObservedObject var player: VlcPlayerController
     let onAdded: () -> Void
     @ObservedObject private var live = LiveSubtitles.shared
+    @ObservedObject private var account = OpenSubtitlesAccount.shared
     @AppStorage("opensubtitles_langs") private var languages = "vi,en"
     /// A subtitle in another language is translated into Vietnamese by the translator chosen for AI subtitles.
     @AppStorage("opensubtitles_translate") private var translate = true
@@ -54,8 +55,20 @@ struct OpenSubtitlesSection: View {
         } header: {
             Text("Tìm phụ đề trên mạng")
         } footer: {
-            Text("Nguồn OpenSubtitles, không cần tài khoản. \"Khớp file\" = đúng bản phim đang xem (đúng thời gian). Phụ đề tải về được lưu lại và hiện giống phụ đề AI — chỉnh cỡ chữ, màu, font ở \"Kiểu chữ phụ đề\".")
+            Text(footerText)
         }
+    }
+
+    private var footerText: String {
+        var text: String
+        if account.isLoggedIn {
+            text = "Tải bằng tài khoản OpenSubtitles \(account.username)"
+            if let remaining = account.remaining { text += " (còn \(remaining) lượt hôm nay)" }
+            text += ". "
+        } else {
+            text = "Chưa đăng nhập OpenSubtitles: ít lượt tải mỗi ngày — đăng nhập tài khoản miễn phí ở Cài đặt → Phụ đề. "
+        }
+        return text + "\"Khớp file\" = đúng bản phim đang xem (đúng thời gian). Phụ đề tải về được lưu lại và hiện giống phụ đề AI."
     }
 
     private func row(_ result: OpenSubtitles.Result) -> some View {
@@ -88,6 +101,7 @@ struct OpenSubtitlesSection: View {
     }
 
     private func search() {
+        guard ProStore.shared.require("Tìm phụ đề trên mạng", in: .subtitleSheet) else { return }
         guard let source = PlaybackQueue.shared.current?.source, let (host, path) = SmbUri.parse(source) else {
             failed = true
             message = "Chỉ hỗ trợ video trên SMB."

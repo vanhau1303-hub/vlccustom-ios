@@ -60,7 +60,8 @@ jobs:
             -sdk iphoneos \
             -configuration Release \
             -archivePath build/VlcCustomIOS.xcarchive \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) SIDELOAD'
           test -d build/VlcCustomIOS.xcarchive
 
       - name: Package the .ipa (unsigned — AltStore/Sideloadly re-sign it on install)

@@ -211,6 +211,7 @@ struct SpeechSubtitleSections: View {
     }
 
     private func use(_ option: ExistingSubtitles.Option) {
+        guard ProStore.shared.require("Dịch phụ đề có sẵn", in: .subtitleSheet) else { return }
         guard let (host, path) = SmbUri.parse(source) else { return }
         loadingOption = option.id
         loadProgress = 0
@@ -236,6 +237,7 @@ struct SpeechSubtitleSections: View {
     }
 
     private func start() {
+        guard ProStore.shared.require("Phụ đề AI", in: .subtitleSheet) else { return }
         settings.saveFolderPreferences(for: source)
         live.start(
             source: source,

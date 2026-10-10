@@ -86,6 +86,8 @@ struct SmbBrowserView: View {
             // Pinned to the top — a VStack in a NavigationStack is otherwise centred vertically, which left the
             // connect form floating mid-screen.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // Free version: a banner above the tab bar.
+            .safeAreaInset(edge: .bottom, spacing: 0) { AdBanner() }
             // Swipe in from the left edge = the back button: up one folder, or off the server from the share list.
             .edgeSwipeBack(enabled: browsingHost != nil) { path.isEmpty ? disconnect() : goUp() }
             .dismissesKeyboardOnTap()

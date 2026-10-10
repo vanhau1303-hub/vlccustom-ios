@@ -11,6 +11,13 @@ packages:
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit.git
     from: 1.1.0
+  # Ads in the free version (AdMob) and Google's consent form (EEA / UK).
+  GoogleMobileAds:
+    url: https://github.com/googleads/swift-package-manager-google-mobile-ads.git
+    from: 11.0.0
+  GoogleUserMessagingPlatform:
+    url: https://github.com/googleads/swift-package-manager-google-user-messaging-platform.git
+    from: 2.0.0
 targets:
   VlcCustomIOS:
     type: application
@@ -27,6 +34,15 @@ targets:
         CFBundleName: "LAN Player"
         # Only standard HTTPS / SMB encryption: no export compliance paperwork per upload.
         ITSAppUsesNonExemptEncryption: false
+        # AdMob (free version). Google's test ids unless the App Store build passes the real ones.
+        GADApplicationIdentifier: "$(LAN_ADMOB_APP_ID)"
+        LANAdBannerUnit: "$(LAN_AD_BANNER_UNIT)"
+        LANAdInterstitialUnit: "$(LAN_AD_INTERSTITIAL_UNIT)"
+        # OpenSubtitles.com API key (App Store builds: from a GitHub secret; empty here).
+        LANOpenSubtitlesKey: "$(LAN_OPENSUBTITLES_KEY)"
+        NSUserTrackingUsageDescription: "Cho phép để quảng cáo trong bản miễn phí phù hợp hơn với bạn. Bản Pro không có quảng cáo."
+        SKAdNetworkItems:
+          - SKAdNetworkIdentifier: cstr6suwn9.skadnetwork
         UILaunchScreen: {}
         # Without this key iPhone ProMotion screens cap third-party apps at 60Hz: scrolling, swipes and animations
         # now run at up to 120Hz.
@@ -60,6 +76,10 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         # Apple's translation framework exists from iOS 17.4 / 18; the app runs from iOS 16.
         OTHER_LDFLAGS: ["$(inherited)", "-weak_framework", "Translation"]
+        LAN_ADMOB_APP_ID: ca-app-pub-3940256099942544~1458002511
+        LAN_AD_BANNER_UNIT: ca-app-pub-3940256099942544/2934735716
+        LAN_AD_INTERSTITIAL_UNIT: ca-app-pub-3940256099942544/4411468910
+        LAN_OPENSUBTITLES_KEY: ""
     dependencies:
       # Explicit `embed: true` — without it, `xcodebuild archive` (used for the real .ipa) does not copy the AMSMB2
       # framework into the app bundle even though it links against it, so the app compiles and even runs fine from a
@@ -71,3 +91,5 @@ targets:
         embed: true
       - package: WhisperKit
         product: WhisperKit
+      - package: GoogleMobileAds
+      - package: GoogleUserMessagingPlatform

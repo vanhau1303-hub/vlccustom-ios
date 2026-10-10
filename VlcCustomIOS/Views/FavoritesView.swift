@@ -39,6 +39,8 @@ struct FavoritesView: View {
                 }
             }
             .navigationTitle("Yêu thích")
+            // Free version: a banner above the tab bar.
+            .safeAreaInset(edge: .bottom, spacing: 0) { AdBanner() }
             .fullScreenCover(isPresented: $playing) {
                 PlayerScreen(onClose: { withoutSlide { playing = false } })
             }

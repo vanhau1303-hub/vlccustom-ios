@@ -21,8 +21,9 @@ struct SubtitleSettingsView: View {
                     IconLabel("Dịch phụ đề tải về sang tiếng Việt", systemName: "globe", color: .blue)
                 }
             } footer: {
-                Text("Phụ đề tìm trên OpenSubtitles mà không phải tiếng Việt được dịch từng câu ngay khi xem, bằng cách dịch đã chọn cho phụ đề AI (Google hoặc Claude).")
+                Text("Phụ đề tìm trên OpenSubtitles mà không phải tiếng Việt được dịch từng câu ngay khi xem, bằng cách dịch đã chọn cho phụ đề AI (Apple hoặc Claude).")
             }
+            OpenSubtitlesAccountSection()
         }
         .navigationTitle("Phụ đề")
         .navigationBarTitleDisplayMode(.inline)
@@ -51,11 +52,11 @@ struct ThumbnailSettingsView: View {
                 Text("Tạo nhiều thumbnail cùng lúc và tạo trước cho cả thư mục. Khi mở video sẽ tự trở về chế độ bình thường (tạm dừng tạo thumbnail) để video không bị giật, đóng video thì chạy nhanh lại.")
             }
             Section {
-                Toggle(isOn: $backfillThumbnails) {
+                ProToggle(feature: "Thumbnail nền", isOn: $backfillThumbnails) {
                     IconLabel("Tạo thumbnail nền", systemName: "square.stack.3d.down.right.fill", color: .indigo)
                 }
                 .onChange(of: backfillThumbnails) { on in backfill.setEnabled(on) }
-                if backfillThumbnails {
+                if backfillThumbnails && ProStore.unlocked {
                     ThumbnailBackfillStatusRow()
                 }
                 NavigationLink {
@@ -73,7 +74,7 @@ struct ThumbnailSettingsView: View {
                 Text("Tự tạo thumbnail (thường + động) còn thiếu cho các thư mục SMB đã mở, từng cái một. Thư mục đang xem luôn được làm trước, sau đó theo thứ tự đã sắp xếp trong \"Thư mục đã xem\". Khi đang xem video sẽ tự chờ.")
             }
             Section {
-                Toggle(isOn: $animatedThumbnails) {
+                ProToggle(feature: "Thumbnail động", isOn: $animatedThumbnails) {
                     IconLabel("Thumbnail động", systemName: "play.rectangle.on.rectangle.fill", color: .pink)
                 }
             } footer: {
@@ -185,6 +186,11 @@ struct AboutView: View {
                     Link("Toàn văn giấy phép LGPL 2.1", destination: lgpl)
                 }
                 Link("Mã nguồn của LAN Player", destination: Self.sourceURL)
+                #if SIDELOAD
+                Toggle("Bật Pro để thử (chỉ bản cài tay)", isOn: Binding(
+                    get: { ProStore.shared.testUnlocked },
+                    set: { ProStore.shared.setTestUnlock($0) }))
+                #endif
             } header: {
                 Text("Giấy phép mã nguồn mở")
             } footer: {

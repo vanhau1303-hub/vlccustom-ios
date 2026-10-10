@@ -80,7 +80,8 @@ final class ThumbnailBackfill: ObservableObject {
         visitedCount = visited.count
     }
 
-    var enabled: Bool { UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true }
+    /// A Pro feature: on by default once Pro is unlocked.
+    var enabled: Bool { (UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true) && ProStore.unlocked }
 
     private func isDone(_ folder: Folder) -> Bool { doneStatics.contains(folder) && donePreviews.contains(folder) }
 
