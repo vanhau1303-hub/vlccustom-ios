@@ -1,0 +1,165 @@
+name: LAN Player → TestFlight / App Store
+
+# Signed App Store build of the `appstore` branch, uploaded straight to App Store Connect (TestFlight, then App Store
+# review from there). Nothing here needs a Mac: everything comes from repository secrets (see docs/APPSTORE-SETUP.md):
+#   DIST_CERT_P12_BASE64, DIST_CERT_PASSWORD   Apple Distribution certificate (.p12) and its password
+#   PROFILE_BASE64                             App Store provisioning profile (.mobileprovision)
+#   TEAM_ID                                    Apple Developer team id (10 characters)
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8_BASE64   App Store Connect API key (.p8) for the upload
+#   ADMOB_APP_ID, ADMOB_BANNER_UNIT, ADMOB_INTERSTITIAL_UNIT   real AdMob ids (Google's test ids otherwise)
+#   OPENSUBTITLES_API_KEY                      OpenSubtitles.com API key
+# Run it with: gh workflow run appstore.yml --ref appstore
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner label (macos-15, macos-15-intel, macos-14)"
+        required: false
+        default: macos-15
+
+jobs:
+  upload:
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the newest available Xcode
+        run: |
+          set -e
+          LATEST=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          echo "Using $LATEST"
+          sudo xcode-select -s "$LATEST"
+          xcodebuild -version
+
+      - name: Check the secrets are there
+        env:
+          DIST_CERT_P12_BASE64: ${{ secrets.DIST_CERT_P12_BASE64 }}
+          PROFILE_BASE64: ${{ secrets.PROFILE_BASE64 }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        run: |
+          missing=""
+          for name in DIST_CERT_P12_BASE64 PROFILE_BASE64 TEAM_ID ASC_KEY_P8_BASE64; do
+            [ -z "${!name}" ] && missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then echo "::error::Missing secrets:$missing (see docs/APPSTORE-SETUP.md)"; exit 1; fi
+
+      - name: Install the certificate and the provisioning profile
+        env:
+          DIST_CERT_P12_BASE64: ${{ secrets.DIST_CERT_P12_BASE64 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.PROFILE_BASE64 }}
+        run: |
+          set -e
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          echo "$DIST_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 7200 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/dist.p12" -P "$DIST_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+          PROFILE="$RUNNER_TEMP/lanplayer.mobileprovision"
+          echo "$PROFILE_BASE64" | base64 --decode > "$PROFILE"
+          security cms -D -i "$PROFILE" > "$RUNNER_TEMP/profile.plist"
+          UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$RUNNER_TEMP/profile.plist")
+          NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "$RUNNER_TEMP/profile.plist")
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+          echo "PROFILE_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "Profile: $NAME ($UUID)"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Install CocoaPods dependencies (MobileVLCKit)
+        run: pod install --repo-update
+
+      - name: Resolve Swift Package dependencies
+        run: xcodebuild -resolvePackageDependencies -workspace VlcCustomIOS.xcworkspace -scheme VlcCustomIOS
+
+      - name: Archive (signed for the App Store)
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          ADMOB_APP_ID: ${{ secrets.ADMOB_APP_ID }}
+          ADMOB_BANNER_UNIT: ${{ secrets.ADMOB_BANNER_UNIT }}
+          ADMOB_INTERSTITIAL_UNIT: ${{ secrets.ADMOB_INTERSTITIAL_UNIT }}
+          OPENSUBTITLES_API_KEY: ${{ secrets.OPENSUBTITLES_API_KEY }}
+        run: |
+          set -e
+          EXTRA=()
+          # Real ad ids only when all three are set (Google's test ids stay otherwise — fine for TestFlight).
+          if [ -n "$ADMOB_APP_ID" ] && [ -n "$ADMOB_BANNER_UNIT" ] && [ -n "$ADMOB_INTERSTITIAL_UNIT" ]; then
+            EXTRA+=(LAN_ADMOB_APP_ID="$ADMOB_APP_ID" LAN_AD_BANNER_UNIT="$ADMOB_BANNER_UNIT" LAN_AD_INTERSTITIAL_UNIT="$ADMOB_INTERSTITIAL_UNIT")
+          else
+            echo "::warning::AdMob secrets not set — this build shows Google's test ads."
+          fi
+          if [ -n "$OPENSUBTITLES_API_KEY" ]; then
+            EXTRA+=(LAN_OPENSUBTITLES_KEY="$OPENSUBTITLES_API_KEY")
+          else
+            echo "::warning::OPENSUBTITLES_API_KEY not set — finding subtitles online will ask for a key."
+          fi
+          # Signing only for the app target (its settings read these LAN_* variables); the CocoaPods targets keep
+          # their own "no signing" settings and are signed when embedded.
+          xcodebuild archive \
+            -workspace VlcCustomIOS.xcworkspace \
+            -scheme VlcCustomIOS \
+            -sdk iphoneos \
+            -configuration Release \
+            -archivePath build/LANPlayer.xcarchive \
+            LAN_SIGNING=YES \
+            LAN_SIGN_IDENTITY="Apple Distribution" \
+            LAN_TEAM_ID="$TEAM_ID" \
+            LAN_PROFILE_NAME="$PROFILE_NAME" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            "${EXTRA[@]}"
+          test -d build/LANPlayer.xcarchive
+
+      - name: Upload to App Store Connect
+        env:
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        run: |
+          set -e
+          KEY="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          echo "$ASC_KEY_P8_BASE64" | base64 --decode > "$KEY"
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict><key>com.vanhau1303.lanplayer</key><string>$PROFILE_NAME</string></dict>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath build/LANPlayer.xcarchive \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath build/export \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          echo "Uploaded build $BUILD_NUMBER — it shows up in App Store Connect → TestFlight after Apple processes it (10–30 min)."
+
+      - name: Clean up the keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

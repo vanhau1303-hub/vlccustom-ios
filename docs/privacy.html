@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LAN Player — Chính sách quyền riêng tư</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --accent: #5B4B8A; --line: #e5e5ea; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111113; --fg: #f5f5f7; --muted: #a1a1a6; --accent: #b3a4e6; --line: #2c2c2e; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; } h2 { font-size: 19px; margin: 32px 0 8px; color: var(--accent); }
+  p, li { color: var(--fg); } .muted { color: var(--muted); font-size: 14px; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 40px 0; }
+</style>
+</head>
+<body>
+<main>
+<h1>Chính sách quyền riêng tư — LAN Player</h1>
+<p class="muted">Cập nhật: 10/10/2026</p>
+
+<p>LAN Player là trình phát video cho các thư mục chia sẻ (SMB) trong mạng nhà bạn. Ứng dụng không có máy chủ riêng, không yêu cầu tạo tài khoản và không bán dữ liệu của bạn.</p>
+
+<h2>Dữ liệu chỉ nằm trên máy của bạn</h2>
+<ul>
+  <li>Địa chỉ máy chủ SMB, tên đăng nhập và mật khẩu (mật khẩu lưu trong Keychain của iOS).</li>
+  <li>Vị trí đang xem, danh sách yêu thích, cài đặt, thumbnail và phụ đề đã tạo.</li>
+  <li>Nhật ký chẩn đoán — chỉ rời khỏi máy khi chính bạn bấm "Chia sẻ log chẩn đoán".</li>
+</ul>
+
+<h2>Khi bạn dùng các tính năng sau</h2>
+<ul>
+  <li><b>Phụ đề AI:</b> nhận dạng giọng nói chạy ngay trên máy. Lần đầu, ứng dụng tải mô hình nhận dạng từ Hugging Face (không gửi dữ liệu cá nhân).</li>
+  <li><b>Dịch bằng Apple:</b> dịch ngay trên máy bằng bộ dịch của iOS.</li>
+  <li><b>Dịch bằng Claude</b> (chỉ khi bạn tự nhập khoá API của mình): nội dung câu phụ đề cần dịch được gửi tới Anthropic, theo <a href="https://www.anthropic.com/legal/privacy">chính sách của Anthropic</a>.</li>
+  <li><b>Tìm phụ đề trên mạng (OpenSubtitles):</b> tên phim / tập đoán từ tên file, mã nhận dạng file (hash) và ngôn ngữ được gửi tới OpenSubtitles.com; nếu bạn đăng nhập, tên đăng nhập và mật khẩu OpenSubtitles được gửi tới họ để xác thực. Xem <a href="https://www.opensubtitles.com/en/privacy">chính sách của OpenSubtitles</a>.</li>
+  <li><b>Video mẫu:</b> phát trực tiếp từ máy chủ của Apple.</li>
+</ul>
+
+<h2>Quảng cáo (bản miễn phí)</h2>
+<p>Bản miễn phí hiển thị quảng cáo của Google AdMob. Google có thể thu thập mã nhận dạng quảng cáo của thiết bị (chỉ khi bạn cho phép ở câu hỏi "Cho phép theo dõi" của iOS), thông tin thiết bị, địa chỉ IP và tương tác với quảng cáo để hiển thị và đo lường quảng cáo — xem <a href="https://policies.google.com/technologies/ads">chính sách quảng cáo của Google</a>. Người dùng ở châu Âu / Anh được hỏi đồng ý trước. Bạn có thể đổi lựa chọn trong Cài đặt iOS → Quyền riêng tư & Bảo mật → Theo dõi. Bản Pro không có quảng cáo.</p>
+
+<h2>Mua bản Pro</h2>
+<p>Giao dịch do Apple xử lý qua App Store; LAN Player không nhận thông tin thanh toán của bạn.</p>
+
+<h2>Trẻ em</h2>
+<p>Ứng dụng không hướng tới trẻ em dưới 13 tuổi và không cố ý thu thập dữ liệu của trẻ em.</p>
+
+<h2>Liên hệ</h2>
+<p>Câu hỏi về quyền riêng tư: <a href="https://github.com/vanhau1303-hub/vlccustom-ios/issues">github.com/vanhau1303-hub/vlccustom-ios/issues</a></p>
+
+<hr>
+
+<h1>Privacy Policy — LAN Player</h1>
+<p class="muted">Updated: October 10, 2026</p>
+<p>LAN Player plays videos from shared (SMB) folders on your home network. It runs no servers of its own, needs no account and does not sell your data.</p>
+<h2>Stays on your device</h2>
+<ul>
+  <li>SMB server addresses, user names and passwords (passwords in the iOS Keychain); watch positions, favorites, settings, thumbnails and generated subtitles; the diagnostics log (only leaves the device if you share it).</li>
+</ul>
+<h2>When you use these features</h2>
+<ul>
+  <li><b>AI subtitles:</b> speech recognition runs on the device; the model is downloaded once from Hugging Face.</li>
+  <li><b>Apple translation:</b> on the device.</li>
+  <li><b>Claude translation</b> (only with your own API key): subtitle text is sent to Anthropic.</li>
+  <li><b>OpenSubtitles:</b> the title guessed from the file name, the file hash and languages are sent to OpenSubtitles.com; your OpenSubtitles login if you sign in.</li>
+</ul>
+<h2>Ads (free version)</h2>
+<p>The free version shows Google AdMob ads. Google may collect the advertising identifier (only if you allow tracking), device information, IP address and ad interactions. Users in the EEA/UK are asked for consent first. Pro has no ads.</p>
+<h2>Purchases</h2>
+<p>Handled by Apple through the App Store.</p>
+<h2>Contact</h2>
+<p><a href="https://github.com/vanhau1303-hub/vlccustom-ios/issues">github.com/vanhau1303-hub/vlccustom-ios/issues</a></p>
+</main>
+</body>
+</html>

@@ -6,3 +6,11 @@ DerivedData/
 dist/
 *.ipa
 .DS_Store
+
+# App Store signing material — never in the repo (it lives in ~/lanplayer-signing and in GitHub Secrets)
+*.p12
+*.p8
+*.mobileprovision
+*.cer
+*.csr
+*.key
