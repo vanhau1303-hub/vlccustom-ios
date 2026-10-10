@@ -785,6 +785,8 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         openedAt = Date()
         lastProgressAt = Date()
         inStall = false
+        // Opening needs the network as much as a seek does.
+        PlayerSeekSignal.note()
         playGeneration += 1
         let generation = playGeneration
         isLoading = true
@@ -936,7 +938,10 @@ final class VlcPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     // still for 1.5 s (not paused, not just seeked or opened) is a stall; two in one video raise the buffer a step
     // for the next videos (Cài đặt → Trình phát → Bộ đệm mạng).
 
-    private var lastSeekAt = Date.distantPast
+    /// Also tells the AI subtitles to keep out of the way for a moment (`PlayerSeekSignal`).
+    private var lastSeekAt = Date.distantPast {
+        didSet { PlayerSeekSignal.note() }
+    }
     private var lastProgressAt = Date()
     private var lastProgressMs: Int32 = -1
     private var stallsThisVideo = 0

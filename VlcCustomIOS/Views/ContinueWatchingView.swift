@@ -26,7 +26,9 @@ struct ContinueWatchingView: View {
                 Button { play(item) } label: { row(item) }
                     .buttonStyle(.plain)
                     .swipeActions {
-                        Button("Xoá", role: .destructive) { history.clearPosition(item.source) }
+                        Button(role: .destructive) { history.clearPosition(item.source) } label: {
+                            Label("Bỏ khỏi danh sách", systemImage: "text.badge.minus")
+                        }
                     }
             }
         }
@@ -36,17 +38,17 @@ struct ContinueWatchingView: View {
         .toolbar {
             if !items.isEmpty {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Xoá hết", role: .destructive) { confirmClear = true }
+                    Button("Làm trống danh sách") { confirmClear = true }
                 }
             }
         }
-        .confirmationDialog("Xoá toàn bộ danh sách đang xem dở?", isPresented: $confirmClear, titleVisibility: .visible) {
-            Button("Xoá hết \(items.count) video", role: .destructive) {
+        .confirmationDialog("Làm trống danh sách đang xem dở?", isPresented: $confirmClear, titleVisibility: .visible) {
+            Button("Bỏ \(items.count) video khỏi danh sách", role: .destructive) {
                 withAnimation { history.clearAllPositions() }
             }
             Button("Huỷ", role: .cancel) {}
         } message: {
-            Text("Mở lại các video này sẽ phát từ đầu. Dấu \"Đã xem\" của video đã xem hết vẫn giữ nguyên.")
+            Text("Chỉ bỏ khỏi danh sách này — video trên máy chủ vẫn còn nguyên, không bị xoá. Mở lại sẽ phát từ đầu; dấu \"Đã xem\" vẫn giữ.")
         }
         .fullScreenCover(isPresented: $playing) {
             PlayerScreen(onClose: { withoutSlide { playing = false } })

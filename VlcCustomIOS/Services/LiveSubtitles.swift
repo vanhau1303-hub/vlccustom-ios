@@ -79,6 +79,40 @@ private struct Coverage {
 /// same windowed-recognition-with-resumable-coverage design, simplified to a single engine (WhisperKit; there is no
 /// iOS build of Moonshine). Work follows the playhead (a seek moves recognition there on the next window), the next
 /// window's audio is extracted while the current one is recognized, and translation runs in batches in the background.
+/// Seeks (and opening a file) in the video player, for the AI subtitles to keep out of the way meanwhile: right after
+/// a seek the player needs the network and the decoder to itself. Reading the next stretch of audio at full speed
+/// beside it (a whole second libVLC pass over the same file) made the sound start before the picture, which then
+/// jumped to catch up. Thread-safe; the player notes, the subtitle work reads.
+enum PlayerSeekSignal {
+    private static let lock = NSLock()
+    private static var last = Date.distantPast
+    private static var count = 0
+
+    static func note() {
+        lock.lock()
+        last = Date()
+        count += 1
+        lock.unlock()
+    }
+
+    /// Seconds since the last seek.
+    static var sinceLast: TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return Date().timeIntervalSince(last)
+    }
+
+    /// Changes with every seek: work started before a seek can tell it is out of date.
+    static var generation: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    /// How long the player gets to itself after a seek.
+    static let settleTime: TimeInterval = 2
+}
+
 @MainActor
 final class LiveSubtitles: ObservableObject {
     static let shared = LiveSubtitles()
@@ -176,7 +210,8 @@ final class LiveSubtitles: ObservableObject {
         startDrainingIfNeeded()
 
         running = true
-        task = Task { [weak self] in
+        // Below the player: its decoding and display come first.
+        task = Task(priority: .utility) { [weak self] in
             await self?.run(source: source, durationMs: durationMs, modelSize: modelSize, language: language, translateTo: translateTo, dual: dual)
         }
     }
@@ -316,6 +351,9 @@ final class LiveSubtitles: ObservableObject {
         var windowLanguages: [(start: Int, end: Int, language: String)] = []
 
         while running, !Task.isCancelled {
+            // A seek just happened: let the player fill its buffer first, then plan from where it landed.
+            await waitForPlayerToSettle()
+            if !running || Task.isCancelled { break }
             // Always work where the viewer is: the first gap at (slightly before) the playhead — a seek moves the
             // work there on the very next window. Only once everything ahead is done are earlier gaps filled in.
             let playhead = playheadProvider?() ?? 0
@@ -357,6 +395,9 @@ final class LiveSubtitles: ObservableObject {
                     lastEnd = cursor + length
                     continue
                 }
+
+                // Recognition is heavy too (CPU, GPU, Neural Engine): not while the player is catching up a seek.
+                await waitForPlayerToSettle()
 
                 // skipSpecialTokens: without it every segment's text carried Whisper's control tokens
                 // ("<|startoftranscript|><|vi|><|0.00|>…") — the "code" that showed up instead of subtitles.
@@ -432,6 +473,11 @@ final class LiveSubtitles: ObservableObject {
                     savePending()
                     startDrainingIfNeeded()
                 }
+            } catch is VlcAudioExtractor.Abandoned {
+                // A seek came while this audio was being read: plan again from where the player landed, starting
+                // with a short window so the first lines there come quickly.
+                lastEnd = nil
+                continue
             } catch {
                 if Task.isCancelled { break }
                 errorMessage = "Lỗi nhận dạng: \(error.localizedDescription)"
@@ -442,6 +488,18 @@ final class LiveSubtitles: ObservableObject {
         status = nil
         running = false
         startDrainingIfNeeded()
+    }
+
+    /// Waits until the last seek is `PlayerSeekSignal.settleTime` old.
+    private func waitForPlayerToSettle() async {
+        var waited = false
+        while running, !Task.isCancelled, PlayerSeekSignal.sinceLast < PlayerSeekSignal.settleTime {
+            if !waited {
+                waited = true
+                PlaybackDiagnostics.append("asr: waiting for the player to settle after a seek")
+            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
     }
 
     // MARK: - Cue shaping

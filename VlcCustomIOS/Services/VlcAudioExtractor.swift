@@ -11,6 +11,9 @@ enum VlcAudioExtractor {
         var errorDescription: String? { message }
     }
 
+    /// The player seeked while this audio was being read: stopped at once to leave the network to the player.
+    struct Abandoned: Error {}
+
     @MainActor
     static func extract(host: String, path: String, login: SmbPlayback.Login?, startMs: Int, durationMs: Int) async throws -> [Float] {
         guard let media = SmbPlayback.media(host: host, path: path, route: .direct, login: login) else {
@@ -29,6 +32,7 @@ enum VlcAudioExtractor {
         media.addOption(":start-time=\(Double(startMs) / 1000)")
         media.addOption(":stop-time=\(Double(startMs + durationMs) / 1000)")
 
+        let generation = PlayerSeekSignal.generation
         let player = VLCMediaPlayer()
         VLCControl.play(player, media: media)
         // Handed to VLCControl when done, never released while it may still be stopping.
@@ -40,6 +44,8 @@ enum VlcAudioExtractor {
         while Date() < deadline {
             try? await Task.sleep(nanoseconds: 200_000_000)
             if Task.isCancelled { break }
+            // This pass reads the file at full speed: right after a seek the player needs that bandwidth.
+            if PlayerSeekSignal.generation != generation { throw Abandoned() }
             switch player.state {
             case .opening, .buffering, .playing, .esAdded: started = true
             case .ended: started = true
