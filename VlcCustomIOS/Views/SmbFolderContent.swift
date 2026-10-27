@@ -204,11 +204,18 @@ struct SmbFolderContent: View {
     private func prefetch(after entry: SmbEntry) {
         // The folder prefill follows where the user is looking.
         ThumbnailService.shared.focus(path: entry.path)
-        guard let index = positions[entry.path] ?? entries.firstIndex(of: entry) else { return }
+        // `positions` is rebuilt by a task after the list changes: while a search narrows the list it can still hold
+        // rows of the full folder (row 800 of a 20-row result crashed the range below). Only trust it when it points
+        // at this very entry.
+        var found = positions[entry.path]
+        if let row = found, !(entries.indices.contains(row) && entries[row].path == entry.path) { found = nil }
+        guard let index = found ?? entries.firstIndex(of: entry) else { return }
         // Every cell appearing used to start a 12-thumbnail warm-up; once per 6 rows of scrolling is enough.
         guard abs(index - warmMark.index) >= 6 else { return }
         warmMark.index = index
-        let upcoming = entries[(index + 1)..<min(entries.count, index + 13)]
+        let end = min(entries.count, index + 13)
+        guard index + 1 < end else { return }
+        let upcoming = entries[(index + 1)..<end]
             .filter { $0.kind != .other }
             .map { $0.isDirectory ? "smbfolder://\(host)/\($0.path)" : "smb://\(host)/\($0.path)" }
         guard !upcoming.isEmpty else { return }

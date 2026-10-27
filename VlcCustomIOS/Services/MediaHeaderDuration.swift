@@ -47,6 +47,8 @@ enum MediaHeaderDuration {
                 var inner = child.dataStart
                 let end = min(bytes.count, child.dataStart + child.size)
                 while inner < end, let e = element(bytes, &inner) {
+                    // A cut-off header (only the first bytes are read) must not run past the end.
+                    guard e.dataStart <= bytes.count, e.size >= 0 else { break }
                     let payload = Array(bytes[e.dataStart..<min(bytes.count, e.dataStart + e.size)])
                     if e.id == 0x2AD7B1 { scale = Double(uint(payload)) }
                     if e.id == 0x4489 { duration = float(payload) }
