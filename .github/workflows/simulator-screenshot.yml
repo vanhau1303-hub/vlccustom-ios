@@ -154,6 +154,14 @@ jobs:
           shot 05_settings_light_green 2 "#30D158" light 5 "media/Phim"
           shot 06_settings_dark_indigo 2 "#5E5CE6" dark 5 "media/Phim"
           shot 07_shares_light 1 "#0A84FF" light 8 ""
+          # Wake-on-LAN: the page of a saved server, filled as the auto-fill finds it on the user's PC, then waking.
+          export SIMCTL_CHILD_DEMO_WOL_HOST="nhabadiem.duckdns.org"
+          export SIMCTL_CHILD_DEMO_WOL_PREFILL="50-EB-F6-5B-7A-48|192.168.1.242|nhabadiem.duckdns.org"
+          shot 10_wol_page 2 "#0A84FF" light 5 "media/Phim"
+          shot 11_wol_page_dark 2 "#5E5CE6" dark 5 "media/Phim"
+          export SIMCTL_CHILD_DEMO_WOL_WAKE="1"
+          shot 12_wol_waking 2 "#0A84FF" light 9 "media/Phim"
+          unset SIMCTL_CHILD_DEMO_WOL_HOST SIMCTL_CHILD_DEMO_WOL_PREFILL SIMCTL_CHILD_DEMO_WOL_WAKE
           # Player (DEMO_SMB_FILE without DEMO_SMB_BROWSE plays it), controls still showing.
           unset SIMCTL_CHILD_DEMO_SMB_BROWSE
           xcrun simctl terminate "$DEVICE_ID" com.vlccustom.ios >/dev/null 2>&1 || true

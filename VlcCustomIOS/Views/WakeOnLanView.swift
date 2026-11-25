@@ -109,6 +109,15 @@ struct WakeOnLanView: View {
     }
 
     private func load() {
+        let env = ProcessInfo.processInfo.environment
+        if WakeTargetStore.target(for: host) == nil, let demo = env["DEMO_WOL_PREFILL"] {
+            // CI screenshots: "MAC|LAN address|DDNS" — what the auto-fill finds on a real Windows PC.
+            let parts = demo.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            if parts.count == 3 { WakeTargetStore.save(WakeTarget(mac: parts[0], lanAddress: parts[1], wanHost: parts[2]), for: host) }
+        }
+        if env["DEMO_WOL_WAKE"] == "1", !waking, report.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { wakeNow() }
+        }
         if let saved = WakeTargetStore.target(for: host) {
             target = saved
         } else {

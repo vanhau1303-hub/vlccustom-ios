@@ -133,6 +133,8 @@ struct SettingsView: View {
     @State private var library: LibraryScreen?
     @ObservedObject private var backfill = ThumbnailBackfill.shared
     @ObservedObject private var history = WatchHistory.shared
+    /// CI screenshots: DEMO_WOL_HOST opens that server's Wake-on-LAN page.
+    @State private var demoWakeHost = ProcessInfo.processInfo.environment["DEMO_WOL_HOST"]
 
     var body: some View {
         NavigationStack {
@@ -199,6 +201,9 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Cài đặt")
+            .navigationDestination(isPresented: Binding(get: { demoWakeHost != nil }, set: { if !$0 { demoWakeHost = nil } })) {
+                WakeOnLanView(host: demoWakeHost ?? "")
+            }
             .sheet(item: $library) { screen in
                 Group {
                     switch screen {
