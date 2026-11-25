@@ -57,7 +57,7 @@ struct WakeOnLanView: View {
             } header: {
                 Text("Trong nhà (LAN)")
             } footer: {
-                Text("Trên máy tính Windows: mở Command Prompt, gõ ipconfig /all → dòng \"Physical Address\" là MAC, \"IPv4 Address\" là IP của card mạng đang cắm.")
+                Text("Tự điền khi kết nối được tới máy chủ trong mạng nhà (MAC lấy qua NetBIOS của Windows). Nếu vẫn trống: trên máy tính mở Command Prompt, gõ ipconfig /all → \"Physical Address\" là MAC, \"IPv4 Address\" là IP.")
             }
 
             Section {
@@ -109,7 +109,6 @@ struct WakeOnLanView: View {
     }
 
     private func load() {
-        guard !loaded else { return }
         if let saved = WakeTargetStore.target(for: host) {
             target = saved
         } else {

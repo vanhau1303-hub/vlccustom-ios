@@ -551,6 +551,8 @@ struct SmbBrowserView: View {
             status = nil
             offline = false
             SmbListingCache.put(host: host, path: folder, entries: fresh)
+            // Reached: fill its Wake-on-LAN settings (MAC, LAN address, DDNS) by itself, once per launch.
+            WakeAutoFill.learn(host: host, username: connection.username)
         } catch {
             guard folder == path else { return }
             // Asleep or off: wake it (when set up), then read the folder again.

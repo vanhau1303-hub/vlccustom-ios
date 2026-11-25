@@ -187,3 +187,118 @@ enum WakeOnLan {
         }
     }
 }
+
+/// Fills a server's Wake-on-LAN settings by itself once it has been reached, so nothing has to be typed:
+/// - its LAN address: the host itself when it is a private address (or a name the home network resolves to one);
+/// - its MAC address: asked from Windows with a NetBIOS "node status" query (UDP 137) — the answer carries the
+///   network card's address;
+/// - its DDNS name: the host itself when it resolves to a public address;
+/// - what is still missing comes from another saved server with the same login (the same PC reached by IP at
+///   home and by DDNS outside).
+/// Only empty fields are filled; what the user typed is kept.
+enum WakeAutoFill {
+    private static let lock = NSLock()
+    private static var done: Set<String> = []
+
+    static func learn(host: String, username: String) {
+        let key = host.lowercased()
+        lock.lock()
+        let first = done.insert(key).inserted
+        lock.unlock()
+        guard first else { return }
+        Task.detached(priority: .utility) {
+            var target = WakeTargetStore.target(for: host) ?? WakeTarget()
+            let before = target
+            let address = resolveIPv4(host)
+            if let address, isPrivate(address) {
+                if target.lanAddress.isEmpty { target.lanAddress = address }
+                if target.mac.isEmpty, let mac = netbiosMAC(address) { target.mac = mac }
+            } else if target.wanHost.isEmpty, !isIPv4(host) {
+                target.wanHost = host
+            }
+            // The same PC saved under its other address (same login): share what each one knows.
+            for profile in SmbServerStore.load()
+            where profile.host.lowercased() != key && profile.username.lowercased() == username.lowercased() {
+                guard var other = WakeTargetStore.target(for: profile.host) else { continue }
+                if target.mac.isEmpty, other.isConfigured { target.mac = other.mac }
+                if target.lanAddress.isEmpty, !other.lanAddress.isEmpty { target.lanAddress = other.lanAddress }
+                if target.wanHost.isEmpty, !other.wanHost.isEmpty { target.wanHost = other.wanHost }
+                let otherBefore = other
+                if other.mac.isEmpty, target.isConfigured { other.mac = target.mac }
+                if other.lanAddress.isEmpty, !target.lanAddress.isEmpty { other.lanAddress = target.lanAddress }
+                if other.wanHost.isEmpty, !target.wanHost.isEmpty { other.wanHost = target.wanHost }
+                if other != otherBefore { WakeTargetStore.save(other, for: profile.host) }
+            }
+            if target != before {
+                WakeTargetStore.save(target, for: host)
+                PlaybackDiagnostics.append("wol: learned \(host) — mac \(target.mac.isEmpty ? "?" : target.mac), lan \(target.lanAddress.isEmpty ? "?" : target.lanAddress), wan \(target.wanHost.isEmpty ? "?" : target.wanHost)")
+            }
+        }
+    }
+
+    static func isIPv4(_ text: String) -> Bool {
+        var addr = in_addr()
+        return inet_pton(AF_INET, text, &addr) == 1
+    }
+
+    /// 10.x, 172.16–31.x, 192.168.x, 169.254.x.
+    static func isPrivate(_ ip: String) -> Bool {
+        let parts = ip.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4 else { return false }
+        return parts[0] == 10 || (parts[0] == 172 && (16...31).contains(parts[1]))
+            || (parts[0] == 192 && parts[1] == 168) || (parts[0] == 169 && parts[1] == 254)
+    }
+
+    static func resolveIPv4(_ host: String) -> String? {
+        if isIPv4(host) { return host }
+        var hints = addrinfo(ai_flags: 0, ai_family: AF_INET, ai_socktype: SOCK_STREAM, ai_protocol: 0,
+                             ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
+        var info: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &info) == 0, let first = info, let sa = first.pointee.ai_addr else { return nil }
+        defer { freeaddrinfo(info) }
+        var addr = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        guard inet_ntop(AF_INET, &addr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else { return nil }
+        return String(cString: buffer)
+    }
+
+    /// NetBIOS node status (RFC 1002): the reply lists the PC's names followed by its 6-byte MAC address.
+    static func netbiosMAC(_ ip: String) -> String? {
+        var query: [UInt8] = [0x13, 0x37, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20]
+        // "*" padded with zeros to 16 bytes, each byte split into two letters 'A' + nibble.
+        let name: [UInt8] = [0x2A] + Array(repeating: 0, count: 15)
+        for byte in name { query += [0x41 + (byte >> 4), 0x41 + (byte & 0x0F)] }
+        query += [0x00, 0x00, 0x21, 0x00, 0x01] // end of name, type NBSTAT, class IN
+
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var timeout = timeval(tv_sec: 1, tv_usec: 500_000)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var to = sockaddr_in()
+        to.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        to.sin_family = sa_family_t(AF_INET)
+        to.sin_port = in_port_t(137).bigEndian
+        guard inet_pton(AF_INET, ip, &to.sin_addr) == 1 else { return nil }
+
+        var reply = [UInt8](repeating: 0, count: 1024)
+        for _ in 0..<2 {
+            let sent = withUnsafePointer(to: &to) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    sendto(fd, query, query.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+            guard sent == query.count else { return nil }
+            let count = recv(fd, &reply, reply.count, 0)
+            guard count > 57 else { continue }
+            // Header 12 + name 34 + type/class 4 + TTL 4 + length 2 = 56, then the number of names.
+            let names = Int(reply[56])
+            let macStart = 57 + names * 18
+            guard macStart + 6 <= count else { continue }
+            let mac = Array(reply[macStart..<(macStart + 6)])
+            guard mac.contains(where: { $0 != 0 }) else { return nil }
+            return mac.map { String(format: "%02X", $0) }.joined(separator: "-")
+        }
+        return nil
+    }
+}
