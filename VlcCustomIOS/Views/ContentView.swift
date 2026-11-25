@@ -159,6 +159,9 @@ struct SettingsView: View {
                     NavigationLink { SubtitleSettingsView() } label: {
                         IconLabel("Phụ đề", systemName: "captions.bubble.fill", color: .mint)
                     }
+                    NavigationLink { WakeOnLanListView() } label: {
+                        IconLabel("Wake-on-LAN", systemName: "power", color: .red)
+                    }
                     NavigationLink { ThumbnailSettingsView() } label: {
                         HStack {
                             IconLabel("Thumbnail", systemName: "photo.stack.fill", color: .indigo)

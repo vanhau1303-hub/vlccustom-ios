@@ -36,6 +36,11 @@ struct SmbBrowserView: View {
     @State private var restoringHost: String?
     /// The folder on screen is the saved listing: the server did not answer this time.
     @State private var offline = false
+    /// Wake-on-LAN in progress for this server ("Đang đánh thức máy chủ… 25 giây").
+    @State private var wakeStatus: String?
+    @State private var wakingHost: String?
+    /// Saved server whose Wake-on-LAN settings are open.
+    @State private var wakeSettingsHost: String?
 
     /// The server being browsed — connected, or being reconnected with the saved listing on screen.
     private var browsingHost: String? { connection?.host ?? restoringHost }
@@ -47,7 +52,19 @@ struct SmbBrowserView: View {
                     Group {
                         connectForm
                         if !savedProfiles.isEmpty { savedServersRow }
-                        if let status { Text(status).foregroundStyle(.red).font(.footnote) }
+                        if let wakeStatus {
+                            HStack(spacing: 8) { ProgressView(); Text(wakeStatus).font(.footnote) }
+                        } else if let status {
+                            Text(status).foregroundStyle(.red).font(.footnote)
+                            if !host.isEmpty, WakeTargetStore.target(for: host)?.isConfigured == true {
+                                Button {
+                                    Task { if await wakeServer(host, manual: true) { connect() } }
+                                } label: {
+                                    Label("Đánh thức máy chủ rồi kết nối", systemImage: "power")
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
                     }
                     .padding(.horizontal)
                 } else {
@@ -225,6 +242,16 @@ struct SmbBrowserView: View {
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color(.secondarySystemGroupedBackground)))
         .padding(.top, 8)
+        .sheet(isPresented: Binding(get: { wakeSettingsHost != nil }, set: { if !$0 { wakeSettingsHost = nil } })) {
+            if let wakeHost = wakeSettingsHost {
+                NavigationStack {
+                    WakeOnLanView(host: wakeHost)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) { Button("Xong") { wakeSettingsHost = nil } }
+                        }
+                }
+            }
+        }
         .sheet(isPresented: $showScan) {
             NetworkScanSheet(onSelect: { ip in host = ip })
         }
@@ -265,6 +292,11 @@ struct SmbBrowserView: View {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(.tint)
+                        .contextMenu {
+                            Button { wakeSettingsHost = profile.host } label: {
+                                Label("Wake-on-LAN…", systemImage: "power")
+                            }
+                        }
                     }
                 }
             }
@@ -274,6 +306,18 @@ struct SmbBrowserView: View {
 
     @ViewBuilder
     private var list: some View {
+        if let wakeStatus, browsingHost != nil {
+            HStack(spacing: 8) { ProgressView(); Text(wakeStatus).font(.footnote).foregroundStyle(.secondary) }
+                .padding(.horizontal)
+        } else if offline, let offlineHost = browsingHost,
+                  WakeTargetStore.target(for: offlineHost)?.isConfigured == true {
+            Button {
+                Task { if await wakeServer(offlineHost, manual: true) { await load(force: true) } }
+            } label: {
+                Label("Đánh thức máy chủ", systemImage: "power").font(.footnote.weight(.semibold))
+            }
+            .padding(.horizontal)
+        }
         if offline, browsingHost != nil {
             HStack(spacing: 8) {
                 Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
@@ -378,6 +422,13 @@ struct SmbBrowserView: View {
         connecting = true
         status = nil
         Task {
+            // Set up for Wake-on-LAN and not answering: wake it first rather than after a long SMB timeout.
+            var woke = false
+            if WakeTargetStore.autoTarget(for: host) != nil,
+               !(await WakeOnLan.portOpen(host: host, port: 445, within: 3)) {
+                woke = true
+                _ = await wakeServer(host)
+            }
             do {
                 let conn = try await SmbRegistry.shared.connect(host: host, username: username, password: password, domain: domain)
                 restoringHost = nil
@@ -390,9 +441,36 @@ struct SmbBrowserView: View {
                 await load()
             } catch {
                 status = error.localizedDescription
+                // Asleep or off: wake it (when set up) and try once more.
+                let target = host
+                if !woke, await wakeServer(target) {
+                    connecting = false
+                    connect()
+                    return
+                }
             }
             connecting = false
         }
+    }
+
+    /// The server does not answer: wake it when Wake-on-LAN is set up (automatic waking on, or `manual`), unless it
+    /// is actually up (a wrong password is not fixed by waking), then wait for it. True once it answers on SMB.
+    private func wakeServer(_ host: String, manual: Bool = false) async -> Bool {
+        guard wakingHost == nil,
+              let target = manual ? WakeTargetStore.target(for: host) : WakeTargetStore.autoTarget(for: host),
+              target.isConfigured else { return false }
+        if !manual, await WakeOnLan.portOpen(host: host, port: 445, within: 2) { return false }
+        wakingHost = host
+        wakeStatus = "Máy chủ không trả lời — đang gửi lệnh đánh thức…"
+        _ = await WakeOnLan.wake(target)
+        let up = await WakeOnLan.waitForSmb(host: host, timeout: 120) { seconds in
+            wakeStatus = "Đang đánh thức máy chủ… \(seconds) giây (máy khởi động có thể mất 1–2 phút)"
+        }
+        PlaybackDiagnostics.append("wol: \(host) \(up ? "answers on SMB" : "still not answering after 2 min")")
+        wakingHost = nil
+        wakeStatus = nil
+        if up { status = nil }
+        return up
     }
 
     /// A folder shortcut from Yêu thích: connect (reusing the live connection or the saved login) and show it here.
@@ -418,6 +496,11 @@ struct SmbBrowserView: View {
             recomputeShown()
         } else {
             entries = []
+        }
+        // Set up for Wake-on-LAN and not answering: wake it now rather than after a long SMB timeout.
+        if WakeTargetStore.autoTarget(for: jump.host) != nil,
+           !(await WakeOnLan.portOpen(host: jump.host, port: 445, within: 3)) {
+            _ = await wakeServer(jump.host)
         }
         connecting = true
         let conn = await SmbRegistry.shared.getOrReconnect(jump.host)
@@ -469,6 +552,12 @@ struct SmbBrowserView: View {
             offline = false
             SmbListingCache.put(host: host, path: folder, entries: fresh)
         } catch {
+            guard folder == path else { return }
+            // Asleep or off: wake it (when set up), then read the folder again.
+            if !force, await wakeServer(host) {
+                if folder == path { await load(force: true) }
+                return
+            }
             guard folder == path else { return }
             if entries.isEmpty {
                 // Nothing saved to show: back to the login form with the reason.
